@@ -79,25 +79,40 @@ async function main() {
   if (!feedX) errors.push('Could not fetch tweet feed');
   if (!feedPodcasts) errors.push('Could not fetch podcast feed');
 
-  // 3. Fetch latest prompts from GitHub (fall back to local copies)
+  // 3. Load prompts with priority: user custom > remote (GitHub) > local default
+  //
+  // If the user has a custom prompt at ~/.follow-builders/prompts/<file>,
+  // use that (they personalized it — don't overwrite with remote updates).
+  // Otherwise, fetch the latest from GitHub so they get central improvements.
+  // If GitHub is unreachable, fall back to the local copy shipped with the skill.
   const prompts = {};
   const scriptDir = decodeURIComponent(new URL('.', import.meta.url).pathname);
   const localPromptsDir = join(scriptDir, '..', 'prompts');
+  const userPromptsDir = join(USER_DIR, 'prompts');
 
   for (const filename of PROMPT_FILES) {
     const key = filename.replace('.md', '').replace(/-/g, '_');
-    // Try remote first
+    const userPath = join(userPromptsDir, filename);
+    const localPath = join(localPromptsDir, filename);
+
+    // Priority 1: user's custom prompt (they personalized it)
+    if (existsSync(userPath)) {
+      prompts[key] = await readFile(userPath, 'utf-8');
+      continue;
+    }
+
+    // Priority 2: latest from GitHub (central updates)
     const remote = await fetchText(`${PROMPTS_BASE}/${filename}`);
     if (remote) {
       prompts[key] = remote;
+      continue;
+    }
+
+    // Priority 3: local copy shipped with the skill
+    if (existsSync(localPath)) {
+      prompts[key] = await readFile(localPath, 'utf-8');
     } else {
-      // Fall back to local
-      const localPath = join(localPromptsDir, filename);
-      if (existsSync(localPath)) {
-        prompts[key] = await readFile(localPath, 'utf-8');
-      } else {
-        errors.push(`Could not load prompt: ${filename}`);
-      }
+      errors.push(`Could not load prompt: ${filename}`);
     }
   }
 

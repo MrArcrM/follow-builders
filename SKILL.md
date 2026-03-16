@@ -378,9 +378,21 @@ open an issue at https://github.com/zarazhangrui/follow-builders."
 - "Send to this chat instead" → Set `delivery.method` to "stdout"
 
 ### Prompt Changes
-- "Make summaries shorter/longer" → Edit the relevant prompt file
+When a user wants to customize how their digest sounds, copy the relevant prompt
+file to `~/.follow-builders/prompts/` and edit it there. This way their
+customization persists and won't be overwritten by central updates.
+
+```bash
+mkdir -p ~/.follow-builders/prompts
+cp ${CLAUDE_SKILL_DIR}/prompts/<filename>.md ~/.follow-builders/prompts/<filename>.md
+```
+
+Then edit `~/.follow-builders/prompts/<filename>.md` with the user's requested changes.
+
+- "Make summaries shorter/longer" → Edit `summarize-podcast.md` or `summarize-tweets.md`
 - "Focus more on [X]" → Edit the relevant prompt file
 - "Change the tone to [X]" → Edit the relevant prompt file
+- "Reset to default" → Delete the file from `~/.follow-builders/prompts/`
 
 ### Info Requests
 - "Show my settings" → Read and display config.json in a friendly format
