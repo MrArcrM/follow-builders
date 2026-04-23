@@ -332,6 +332,38 @@ The script outputs a single JSON blob with everything you need:
 If the script fails entirely (no JSON output), tell the user to check their
 internet connection. Otherwise, use whatever content is in the JSON.
 
+### ⚠️ Handling Large Output
+
+The prepare script output can exceed 100KB when podcast transcripts are included.
+When the output is too large for inline display (you'll see a "persisted-output"
+message with a temp file path), do NOT try to Read the temp file directly — it
+will exceed the Read tool's per-call token limit regardless of how you set the
+limit parameter (JSON lines are very long, even 50 lines can be 30k tokens).
+
+Instead, use Bash to extract sections separately:
+
+```bash
+# Extract just the tweets (skip podcasts/transcripts)
+cat <temp-file> | python3 -c "import sys,json; d=json.load(sys.stdin); [print(json.dumps(b, ensure_ascii=False)) for b in d.get('x',[])]"
+
+# Extract podcast metadata (without full transcript)
+cat <temp-file> | python3 -c "import sys,json; d=json.load(sys.stdin); [print(json.dumps({k:v for k,v in p.items() if k!='transcript'}, ensure_ascii=False)) for p in d.get('podcasts',[])]"
+
+# Extract podcast transcript in chunks (5000 chars each)
+cat <temp-file> | python3 -c "import sys,json; d=json.load(sys.stdin); t=d['podcasts'][0]['transcript']; print(t[:5000])"
+cat <temp-file> | python3 -c "import sys,json; d=json.load(sys.stdin); t=d['podcasts'][0]['transcript']; print(t[5000:10000])"
+# ... continue in 5000-char chunks until done
+
+# Extract prompts
+cat <temp-file> | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d.get('prompts',{}), ensure_ascii=False))"
+
+# Extract stats and config
+cat <temp-file> | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps({k:d[k] for k in ['stats','config','errors'] if k in d}, ensure_ascii=False))"
+```
+
+Process tweets and podcasts separately — do NOT try to load the entire JSON into
+your context at once.
+
 ### Step 3: Check for content
 
 If `stats.podcastEpisodes` is 0 AND `stats.xBuilders` is 0, tell the user:
@@ -394,6 +426,28 @@ Read `config.language` from the JSON:
 **Follow this setting exactly. Do NOT mix languages.**
 
 ### Step 6: Deliver
+
+**6a. Save digest to file (always):**
+```bash
+mkdir -p ~/.follow-builders/digests
+cat > ~/.follow-builders/digests/$(date +%Y-%m-%d).md << 'DIGESTEOF'
+<your digest text>
+DIGESTEOF
+```
+
+**6b. Send digest file to Feishu group (always):**
+```bash
+cd ~/.follow-builders/digests && lark-cli im +messages-send \
+  --chat-id oc_1ff1b4cc554f9dee3809000d90c9f383 \
+  --file ./$(date +%Y-%m-%d).md \
+  --as bot
+```
+Note: lark-cli requires `--file` to be a relative path within the current directory.
+Always `cd` to the digests directory first.
+This sends the markdown file as a **file attachment** (not inline text). Requires 6a to have saved the file first.
+If lark-cli fails, log the error but do NOT stop — continue to 6c.
+
+**6c. Deliver per user preference:**
 
 Read `config.delivery.method` from the JSON:
 
