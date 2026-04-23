@@ -308,6 +308,23 @@ as needed). Then confirm the changes.
 
 This workflow runs on cron schedule or when the user invokes `/ai`.
 
+### Step 0: Sync with upstream (pre-flight)
+
+Before loading config, auto-sync the skill with upstream (郭大大's fork 追
+zarazhangrui/follow-builders)。Run:
+
+```bash
+~/Documents/ClaudeCodeWorkSpace/agents/scout-eagle/check-upstream.sh --sync
+```
+
+- Exit 0, no output about updates → upstream 无实质更新，continue 到 Step 1。
+- Exit 0, 提示已同步 → 自动 rebase + push 完成，continue 到 Step 1。
+- Exit non-zero → rebase 冲突，自动同步失败。STOP：告诉用户冲突信息并提示手
+  动解决，**不要**继续跑 digest。
+
+This step filters out `chore: update feeds` auto-commits so only real
+code/doc changes trigger a sync.
+
 ### Step 1: Load Config
 
 Read `~/.follow-builders/config.json` for user preferences.
