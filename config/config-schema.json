@@ -56,6 +56,20 @@
         }
       }
     },
+    "feishuShare": {
+      "type": "object",
+      "description": "Optional: push the daily digest PDF to a Feishu (Lark) group via lark-cli. Independent of `delivery.method` — runs in addition to it. Skipped silently if missing or chatId is empty.",
+      "properties": {
+        "chatId": {
+          "type": "string",
+          "description": "Feishu group chat ID like oc_xxx (target group to post the daily PDF)"
+        },
+        "larkProfile": {
+          "type": "string",
+          "description": "lark-cli profile name to send from (use a dedicated bot profile, e.g. 'ai-digest', NOT your personal default profile)"
+        }
+      }
+    },
     "onboardingComplete": {
       "type": "boolean",
       "default": false,
