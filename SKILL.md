@@ -414,11 +414,60 @@ Assemble the digest following `prompts.digest_intro`.
 - Do NOT guess job titles. Use the `bio` field or just the person's name.
 - Do NOT visit x.com, search the web, or call any API.
 
+**Format conventions (strict — these are how the digest looked yesterday, must match every day):**
+
+1. **Link format**: Every URL on its own line, preceded by a blank line, as `🔗 <url>` autolink. Tweet/blog → `🔗`, podcast/video → `🎬`. Never bare URLs, never inline.
+
+2. **Heading levels**:
+   - H2 sections use **Title Case**, not ALL CAPS: `## X / Twitter`, `## Official Blogs`, `## Podcasts` (NOT `## TWITTER`).
+   - H3 builders use `Name · Role` order, with `·` (middle dot) separator: `### Aaron Levie · Box CEO`, `### Garry Tan · Y Combinator CEO` (NOT `### Box CEO Aaron Levie`).
+
+3. **Takeaway / 核心观点 use blockquote**, NOT bold inline:
+   - English: `> The Takeaway: ...`
+   - Chinese: `> 核心观点：...`
+   - NEVER: `**The Takeaway:** ...` or `**核心观点：** ...`
+
+4. **Podcast bilingual layout**: English summary and Chinese translation each get their **own H3** (translated title), separated by horizontal rule `---`. Example:
+
+```
+### No Priors · Scaling Global Organizations with ServiceNow CEO Bill McDermott
+
+> The Takeaway: ...
+
+<English summary paragraphs>
+
+🎬 <https://www.youtube.com/watch?v=xxx>
+
+---
+
+### No Priors · 与 ServiceNow CEO Bill McDermott 聊在 AI 时代如何扩张全球化组织
+
+> 核心观点：...
+
+<中文摘要>
+
+🎬 <https://www.youtube.com/watch?v=xxx>
+```
+
+5. **X/Twitter bilingual layout**: English summary, then Chinese translation directly below (no extra H3). Each followed by `🔗 <url>`. See Step 5 example.
+
+6. **Footer**: digest MUST end with this exact line (after a `---` separator):
+   ```
+   Generated through the [Follow Builders skill](https://github.com/zarazhangrui/follow-builders).
+   ```
+   Use Markdown link syntax `[text](url)`. Do NOT use bare URL or `text: url` form.
+
+Violating any of these forces a manual fix every morning. Match yesterday's format exactly.
+
 ### Step 5: Apply language
 
 Read `config.language` from the JSON:
 - **"en":** Entire digest in English.
-- **"zh":** Entire digest in Chinese. Follow `prompts.translate`.
+- **"zh":** Entire digest in Chinese. Follow `prompts.translate`. Additional rules:
+  - **H2 section headings translate to Chinese**: `## 推文` (was `X / Twitter`), `## 官方博客` (was `Official Blogs`), `## 播客` (was `Podcasts`).
+  - **H3 builder names**: keep proper names in English (Aaron Levie, Garry Tan, Sam Altman are not translated). Roles can stay in their original form (`Box CEO`, `Y Combinator CEO`) — these are widely recognized titles. Format: `### Aaron Levie · Box CEO`.
+  - **Blog/Podcast H3 titles translate to Chinese**.
+  - **Podcast section uses single H3** (Chinese only) — no English/Chinese H3 split (the `---` between English and Chinese podcast blocks from bilingual mode does NOT apply here).
 - **"bilingual":** Interleave English and Chinese **paragraph by paragraph**.
   For each builder's tweet summary: English version, then Chinese translation
   directly below, then the next builder. For the podcast: English summary,
@@ -426,16 +475,20 @@ Read `config.language` from the JSON:
 
   ```
   Box CEO Aaron Levie argues that AI agents will reshape software procurement...
-  https://x.com/levie/status/123
+
+  🔗 <https://x.com/levie/status/123>
 
   Box CEO Aaron Levie 认为 AI agent 将从根本上重塑软件采购...
-  https://x.com/levie/status/123
+
+  🔗 <https://x.com/levie/status/123>
 
   Replit CEO Amjad Masad launched Agent 4...
-  https://x.com/amasad/status/456
+
+  🔗 <https://x.com/amasad/status/456>
 
   Replit CEO Amjad Masad 发布了 Agent 4...
-  https://x.com/amasad/status/456
+
+  🔗 <https://x.com/amasad/status/456>
   ```
 
   Do NOT output all English first then all Chinese. Interleave them.
@@ -445,26 +498,74 @@ Read `config.language` from the JSON:
 ### Step 6: Deliver
 
 **6a. Save digest to file (always):**
+
+The digest text MUST start with H1 `# AI 早报 · YYYY-MM-DD` (Chinese-friendly title for the share group). The .md file itself stays under date-only filename for archive consistency.
+
 ```bash
 mkdir -p ~/.follow-builders/digests
 cat > ~/.follow-builders/digests/$(date +%Y-%m-%d).md << 'DIGESTEOF'
-<your digest text>
+# AI 早报 · $(date +%Y-%m-%d)
+
+<rest of digest text>
 DIGESTEOF
 ```
 
-**6b. Send digest file to Feishu group (always):**
-```bash
-cd ~/.follow-builders/digests && lark-cli im +messages-send \
-  --chat-id oc_1ff1b4cc554f9dee3809000d90c9f383 \
-  --file ./$(date +%Y-%m-%d).md \
-  --as bot
-```
-Note: lark-cli requires `--file` to be a relative path within the current directory.
-Always `cd` to the digests directory first.
-This sends the markdown file as a **file attachment** (not inline text). Requires 6a to have saved the file first.
-If lark-cli fails, log the error but do NOT stop — continue to 6c.
+**6b. Convert digest .md → .pdf (always):**
 
-**6c. Deliver per user preference:**
+Output filename uses the Chinese-friendly title as the basename (so it shows up as `AI 早报 2026-04-27.pdf` in the Feishu share group, not just a bare date).
+
+```bash
+DATE=$(date +%Y-%m-%d)
+~/.claude/skills/md-to-pdf/scripts/md_to_pdf.sh \
+  ~/.follow-builders/digests/${DATE}.md \
+  "$HOME/.follow-builders/digests/AI 早报 ${DATE}.pdf" \
+  claude-white-larger
+```
+
+Use `claude-white-larger` theme (body 13.5pt) for mobile readability in the share group. Do NOT use the default `claude-white` (body 10.5pt — too small on phone).
+
+If md-to-pdf fails, log the error but do NOT stop — fall back to sending the .md file in 6c.
+
+**6c. Send digest PDF (or .md fallback) to Feishu group (optional, configured per user):**
+
+Reads `feishuShare.chatId` and `feishuShare.larkProfile` from `~/.follow-builders/config.json`. **If either is missing or empty, skip this step entirely.**
+
+⚠️ **NEVER hardcode the chat ID in this file.** Use the user's own dedicated bot profile (e.g. `ai-digest`), NOT the main lark-cli default profile (which is typically the user's personal Claude Code bot — exposing it to a share group leaks private context).
+
+```bash
+DATE=$(date +%Y-%m-%d)
+CFG=~/.follow-builders/config.json
+CHAT_ID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$CFG'))?.feishuShare?.chatId||'')}catch(e){}")
+PROFILE=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$CFG'))?.feishuShare?.larkProfile||'')}catch(e){}")
+
+if [ -n "$CHAT_ID" ] && [ -n "$PROFILE" ]; then
+  cd ~/.follow-builders/digests && lark-cli --profile "$PROFILE" im +messages-send \
+    --chat-id "$CHAT_ID" \
+    --file "./AI 早报 ${DATE}.pdf" \
+    --as bot
+fi
+```
+
+Fallback (if PDF generation failed in 6b — send .md instead):
+```bash
+DATE=$(date +%Y-%m-%d)
+CFG=~/.follow-builders/config.json
+CHAT_ID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$CFG'))?.feishuShare?.chatId||'')}catch(e){}")
+PROFILE=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$CFG'))?.feishuShare?.larkProfile||'')}catch(e){}")
+
+if [ -n "$CHAT_ID" ] && [ -n "$PROFILE" ]; then
+  cd ~/.follow-builders/digests && lark-cli --profile "$PROFILE" im +messages-send \
+    --chat-id "$CHAT_ID" \
+    --file ./${DATE}.md \
+    --as bot
+fi
+```
+
+Note: lark-cli requires `--file` to be a relative path within the current directory. Always `cd` to the digests directory first.
+This sends a **file attachment** (not inline text). Requires 6a/6b output to exist.
+If lark-cli fails, log the error but do NOT stop — continue to 6d.
+
+**6d. Deliver per user preference:**
 
 Read `config.delivery.method` from the JSON:
 
