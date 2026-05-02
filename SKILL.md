@@ -335,8 +335,11 @@ This script handles ALL data fetching deterministically — feeds, prompts, conf
 You do NOT fetch anything yourself.
 
 ```bash
-cd ${CLAUDE_SKILL_DIR}/scripts && node prepare-digest.js 2>/dev/null
+DATE=$(date +%Y-%m-%d)
+cd ${CLAUDE_SKILL_DIR}/scripts && node prepare-digest.js 2>/dev/null | tee /tmp/fb-prepare-${DATE}.json
 ```
+
+The `tee` snapshot at `/tmp/fb-prepare-${DATE}.json` is REQUIRED by Step 4d / 4f (codex 审计) — don't omit it.
 
 The script outputs a single JSON blob with everything you need:
 - `config` — user's language and delivery preferences
@@ -386,7 +389,102 @@ your context at once.
 If `stats.podcastEpisodes` is 0 AND `stats.xBuilders` is 0, tell the user:
 "No new updates from your builders today. Check back tomorrow!" Then stop.
 
-### Step 4: Remix content
+### Step 4: Remix content（pipeline）
+
+写 → 审 → 修 流水线。**不要把 Step 4 当一步**——它有 8 个不可跳过的子步骤：
+
+```
+4-pre  读护栏清单（priming）
+4a     长推 print + FACTS 行（强制读完）
+4b     Podcast 分块 print + BLOCK_n 摘要（强制读完）
+4c     写中文 digest（v1 风格）
+4d     codex 事实审计（异源）
+4e     应用事实 issue（一轮）
+4f     codex 通顺审（异源）
+4g     应用通顺 issue（一轮）
+```
+
+每一步都设计成「有产物」——产物不在，下游能看出来。这是过去靠"我下次细心"反复翻车后定下的结构性 gate。
+
+### Step 4-pre: 读护栏清单（priming）
+
+每次跑 digest 写作前，**必须**读一遍 `~/.follow-builders/guardrails.md`：
+
+```bash
+cat ~/.follow-builders/guardrails.md
+```
+
+这份清单是滚动更新的写作风格防线，沉淀了**所有过去踩过的坑**——长推 + 编号列表 + 熟悉领域 = 模板补全高危区，priming 后写作时会主动放慢。
+
+每次跑完后如果踩到新坑，把新条目沉淀进 `## 滚动更新区`——3 个月后这是一份基于实战的防御清单，不是抽象决心。
+
+如果文件不存在（首次部署 / 用户机器没有），告诉用户初始化：复制一份模板到 `~/.follow-builders/guardrails.md`，再继续。
+
+### Step 4a: 长推 print + FACTS 行（强制读完）
+
+对每条 **>1500 字符** 的推文，写中文摘要**之前**必须先 print 原文 + 写一行 FACTS。这一步把"读完"外化成有产物的硬步骤——**没有 FACTS 行 = 没读完**。
+
+```bash
+DATE=$(date +%Y-%m-%d)
+python3 -c "
+import json
+d = json.load(open('/tmp/fb-prepare-${DATE}.json'))
+for b in d.get('x', []):
+    for t in b.get('tweets', []):
+        text = t.get('text', '')
+        if len(text) > 1500:
+            print('---')
+            print(f'[{b.get(\"handle\")}/{t.get(\"url\",\"\").split(\"/\")[-1]}]')
+            print(text)
+            print()
+"
+```
+
+每条长推 print 之后，**立刻**在主 agent 输出里写：
+
+```
+[handle/tweet_id]
+FACTS: <主要 claim>; <列表项 1/2/3>; <数字>; <定量声明>
+```
+
+例（Karpathy three new horizons 长推）：
+```
+FACTS: three new horizons = (1) menugen 图入图出；(2) install .md skills 替代 install .sh；(3) LLM 知识库
+       jaggedness = verifiability + 经济学（RL 训练分布按 revenue/TAM）
+       agent-native 经济：传感器/执行器/逻辑；agentic engineering 新工种
+```
+
+写出 FACTS 行**之后**再写中文摘要。模板补全发生在「绕开 raw 直接写中文」的路径上，FACTS 行就是堵死这条路径——5/2 上午 Karpathy #2 #3 替换事故，如果有 FACTS 行根本写不出来。
+
+短推 / 链接推（<1500 字符）跳过 FACTS。
+
+### Step 4b: Podcast 分块 print + BLOCK_n 摘要（强制读完）
+
+Podcast transcript 通常 >20KB，整体 Read 容易扫读 + 漏末尾。改成分 5000 字符块 print，**每块之后立刻写一行 BLOCK_n 摘要**：
+
+```bash
+DATE=$(date +%Y-%m-%d)
+python3 -c "
+import json
+d = json.load(open('/tmp/fb-prepare-${DATE}.json'))
+for p in d.get('podcasts', []):
+    t = p.get('transcript', '')
+    for i in range(0, len(t), 5000):
+        print(f'=== BLOCK {i//5000 + 1} ({i}:{min(i+5000, len(t))}) ===')
+        print(t[i:i+5000])
+        print()
+"
+```
+
+每块 print 之后**立刻**写：
+
+```
+BLOCK_n (start:end) : <这块讲了什么，一行 ≤120 字>
+```
+
+全部块过完**再**写中文摘要。BLOCK_n 摘要会把 transcript 末尾内容显式拉进 context，5/2 上午"AGI 2030 之前到来"那种事故（末尾 over/under 段没读到）就不会复发。
+
+### Step 4c: 写中文 digest（v1 风格，editorial 自由）
 
 **Your ONLY job is to remix the content from the JSON.** Do NOT fetch anything
 from the web, visit any URLs, or call any APIs. Everything is in the JSON.
@@ -458,6 +556,178 @@ Assemble the digest following `prompts.digest_intro`.
    Use Markdown link syntax `[text](url)`. Do NOT use bare URL or `text: url` form.
 
 Violating any of these forces a manual fix every morning. Match yesterday's format exactly.
+
+### Step 4d: codex 事实审计（一轮，不可跳过）
+
+写完 Step 4c 初稿、落到 `~/.follow-builders/digests/${DATE}.md` 后，跑一轮**异源**事实审计。codex 是不同模型 = 不同先验，恰好抓主 agent 自己看不见的「先验自动补全」事故。
+
+**前置：digest 草稿落正式路径**
+
+直接写到 `~/.follow-builders/digests/${DATE}.md`（4d/4e/4f/4g 都在这个文件上原地改）。
+
+**跑 codex task（read-only）**
+
+`task` 命令默认 read-only，不加 `--write`。raw 走 Step 2 的 tee 快照。
+
+```bash
+DATE=$(date +%Y-%m-%d)
+DRAFT=~/.follow-builders/digests/${DATE}.md
+RAW=/tmp/fb-prepare-${DATE}.json
+OUT=/tmp/fb-factcheck-${DATE}.json
+ERR=/tmp/fb-factcheck-${DATE}.err
+CODEX_SCRIPT=~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
+
+node "$CODEX_SCRIPT" task "$(cat <<EOF
+You are a fact-checker for a Chinese AI industry digest. Read both files below, audit hard factual claims only.
+
+Inputs:
+- Digest (Chinese Markdown): $DRAFT
+- Raw source feed (JSON): $RAW
+
+Audit ONLY these claim types:
+- Specific names (people / products / companies that appear in raw)
+- Numbered list items inside enumerated lists ("three things", "N 个例子")
+- Dates and numbers and percentages
+- Quoted strings (direct verbatim quotes)
+- Quantitative attributions: "first / only / Top N / leading / fastest"
+
+EXEMPTIONS (skip — do NOT report these):
+- Role / title in H3 headings (Cursor 设计负责人, OpenClaw 创始人, OpenAI CEO, etc.) — bio inference is allowed
+- Industry idiom translation (raw "non-coding computer work" → digest "computer-use agent" type rephrasing)
+- Footer template line about Follow Builders / md-to-pdf
+- Soft interpretive paraphrase that is reasonable extrapolation
+- Industry common knowledge about well-known people/products
+
+Output ONLY a JSON array. Schema:
+[
+  {
+    "location": "<builder name or section heading>",
+    "claim": "<exact text snippet from digest>",
+    "raw_excerpt": "<closest matching text from raw, or null if absent>",
+    "verdict": "supported" | "contradicted" | "unsupported",
+    "severity": "hard_fact" | "quantitative"
+  }
+]
+
+Only include "contradicted" or "unsupported" entries. Skip "supported" to keep output small.
+
+HARD CONSTRAINTS:
+- Do NOT comment on style, tone, length, readability, word choice, or Chinese phrasing.
+- Do NOT suggest editorial changes or rewrites.
+- Do NOT browse the web.
+- Read-only. Output JSON array only.
+EOF
+)" > $OUT 2> $ERR
+RC=$?
+
+if [ $RC -ne 0 ]; then
+  echo "❌ codex 事实审失败 (exit $RC)，stderr:"
+  cat $ERR
+  echo "STOP：codex 不可用。问用户：'修复后重跑 还是 裸发未经审计的版本（不推荐）？'"
+  exit 1
+fi
+
+python3 -c "import json; d=json.load(open('$OUT')); assert isinstance(d, list)" 2>/dev/null \
+  || { echo "❌ codex 输出非合法 JSON 数组，看 $OUT 排查"; exit 1; }
+```
+
+如果 codex 失败或输出非 JSON：**不要继续**，问用户修复后重跑还是裸发。
+
+### Step 4e: 应用事实 issue（一轮）
+
+读 `$OUT` 的 JSON 数组，按 verdict + severity 处理：
+
+| verdict | severity | 处理 |
+|---|---|---|
+| `contradicted` | * | **必改**：精读 raw_excerpt 上下文，改回真实版本 |
+| `unsupported` | `hard_fact` | **必改**：回 raw 找替代，找不到就删该具体声明（保留段落骨架） |
+| `unsupported` | `quantitative` | **必改**：降级措辞（"第一" → "代表性"，"100%" → "几乎全部"，"唯一" → "少数"） |
+
+**Builder 段重写阈值**：单个 builder 出现 ≥3 条红 → 不做单点修补，**精读该 builder 的 raw 推文，整段重写**。这种密集报错说明这一段从根上就是脑补的。
+
+**精读 = 定点突破**：只读 codex 指出的那条推文 / 那段 transcript，不全篇回炉。
+
+**只此一轮**：改完直接进 4f，不重新跑 codex。
+
+修订原地写回 `$DRAFT`（不要另存新文件，4f 还要用）。
+
+### Step 4f: codex 通顺审（一轮，不可跳过）
+
+事实修完后，跑第二轮 codex —— 这次审中文通顺度，扮演飞书群里完全不懂技术的同事第一次读。这一轮是为了挡住「半翻译」「未译术语穿插」「跨段呼应」「主语切换混乱」这类同源 self-review 看不见的盲点。
+
+```bash
+DATE=$(date +%Y-%m-%d)
+DRAFT=~/.follow-builders/digests/${DATE}.md
+OUT=/tmp/fb-readability-${DATE}.json
+ERR=/tmp/fb-readability-${DATE}.err
+CODEX_SCRIPT=~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
+
+node "$CODEX_SCRIPT" task "$(cat <<EOF
+You are a Chinese-language readability reviewer. Read the digest as if you were a non-technical Feishu group member reading it for the first time.
+
+Input:
+- Digest (Chinese Markdown): $DRAFT
+
+Output ONLY a JSON array:
+[
+  {
+    "location": "<builder name or section heading>",
+    "issue_type": "untranslated_term" | "awkward_phrasing" | "quote_misuse" | "cross_section_reference" | "logic_break",
+    "claim": "<original Chinese sentence from digest>",
+    "suggestion": "<a concrete revised Chinese sentence>"
+  }
+]
+
+issue_type guide:
+- untranslated_term: 第一次出现的英文专业术语没有中文释义或译名（in silico / emergent / virtual cell / agentic engineering / opinionated 等）。允许保留专有名词如 AlphaFold / WeatherNext / Cognition 等。
+- awkward_phrasing: 一口气读不下去 / 卡顿 / 长定语 / 主谓不搭 / 半口语判断词（"可以并读"/"夸张地高"/"无所不包" 等）
+- quote_misuse: 中文引号用得像反讽 / 能去掉的多余引号
+- cross_section_reference: 跨段呼应别扭（"这呼应了同日 X 提的…"）
+- logic_break: 段内前后逻辑断裂 / 前言不搭后语
+
+HARD CONSTRAINTS:
+- Do NOT comment on factual correctness (separate audit).
+- Do NOT suggest editorial style / tone / length changes.
+- Do NOT recommend adding extra context or examples.
+- Do NOT propose removing editorial commentary, metaphors, or analogies.
+- Do NOT browse the web.
+- Read-only. Output JSON only.
+
+Aim for 3-10 issues. If clean, output [].
+EOF
+)" > $OUT 2> $ERR
+RC=$?
+
+if [ $RC -ne 0 ]; then
+  echo "❌ codex 通顺审失败 (exit $RC)，stderr:"
+  cat $ERR
+  echo "STOP：通顺审不可用。问用户怎么办。"
+  exit 1
+fi
+
+python3 -c "import json; d=json.load(open('$OUT')); assert isinstance(d, list)" 2>/dev/null \
+  || { echo "❌ codex 输出非合法 JSON 数组，看 $OUT 排查"; exit 1; }
+```
+
+### Step 4g: 应用通顺 issue（一轮）
+
+读 `$OUT` JSON 数组，按 issue_type 分流处理 codex 给的 `suggestion`：
+
+| issue_type | 默认处理 |
+|---|---|
+| `untranslated_term` | **接受**（按 suggestion 加中文译名/括注，或保留英文 + 中文括注，例 `orchestrator` → `编排者（orchestrator）`） |
+| `awkward_phrasing` | **接受** suggestion |
+| `quote_misuse` | **接受**（去掉引号或重写） |
+| `cross_section_reference` | **接受**（删跨段呼应） |
+| `logic_break` | **主 agent 判断**（结合 raw 重新组织段内逻辑，不无脑套 suggestion） |
+
+**Editorial 不改**：codex 的 suggestion 如果碰到隐喻、判断、类比、修辞性引号、editorial 钩子，主 agent **主动拒绝**——这些是 v1 风格的核心，2026-05-02 v2/v3 反例的教训就是不能让 reviewer 砍 editorial。
+
+**有歧义的术语豁免**（如 `agent-native` 该不该译）→ 主 agent 判断，默认保留有行业辨识度的英文 + 第一次出现给中文括注（例 `agent-native（agent 原生）经济`）。
+
+**只此一轮**：改完直接进 Step 5（语言模式应用），不重新跑 codex。
+
+修订原地写回 `$DRAFT`。
 
 ### Step 5: Apply language
 
