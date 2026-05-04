@@ -384,127 +384,70 @@ cat <temp-file> | python3 -c "import sys,json; d=json.load(sys.stdin); print(jso
 Process tweets and podcasts separately — do NOT try to load the entire JSON into
 your context at once.
 
+### Step 2.5: 过滤过期内容（本地修补，feed 源管不到）
+
+**核心原则（郭大大 5/4 拍板）**：给读者过期信息，不如不给。
+
+中央 feed 的官博和播客窗口都偏宽（官博 72h 但有"无 publishedAt 时放行"漏洞，播客 14 天），但读者读早报想看的是新东西。本地兜底过滤：
+
+- **官博**：只保留 publishedAt 在近 **48 小时**内的，无 publishedAt 一律剔除
+- **播客**：只保留 publishedAt 在近 **48 小时**内的（5/4 郭大大拍板与官博同窗口），无 publishedAt 一律剔除。播客频率低意味着今天没新一集就直接空播客栏，不要硬塞昨日之前的内容。
+
+```bash
+DATE=$(date +%Y-%m-%d)
+DATE=$DATE python3 - <<'PYEOF'
+import json, os, datetime, sys
+date = os.environ.get('DATE') or datetime.date.today().strftime('%Y-%m-%d')
+path = f'/tmp/fb-prepare-{date}.json'
+with open(path) as f:
+    d = json.load(f)
+now = datetime.datetime.now(datetime.timezone.utc)
+def fresh(item, hours):
+    p = item.get('publishedAt')
+    if not p:
+        return False
+    try:
+        ts = datetime.datetime.fromisoformat(p.replace('Z', '+00:00'))
+    except Exception:
+        return False
+    return ts >= now - datetime.timedelta(hours=hours)
+b_before = len(d.get('blogs', []))
+d['blogs'] = [b for b in d.get('blogs', []) if fresh(b, 48)]
+p_before = len(d.get('podcasts', []))
+d['podcasts'] = [p for p in d.get('podcasts', []) if fresh(p, 48)]
+d.setdefault('stats', {})['blogPosts'] = len(d['blogs'])
+d['stats']['podcastEpisodes'] = len(d['podcasts'])
+with open(path, 'w') as f:
+    json.dump(d, f, ensure_ascii=False, indent=2)
+print(f'blog filter: {b_before} -> {len(d["blogs"])} (48h)', file=sys.stderr)
+print(f'podcast filter: {p_before} -> {len(d["podcasts"])} (48h)', file=sys.stderr)
+PYEOF
+```
+
+过滤后整个栏目空 → 该 H2 段直接跳过。**宁可空，不要过期**。
+
 ### Step 3: Check for content
 
 If `stats.podcastEpisodes` is 0 AND `stats.xBuilders` is 0, tell the user:
 "No new updates from your builders today. Check back tomorrow!" Then stop.
 
-### Step 4: Remix content（pipeline）
+### Step 4: Remix content
 
-写 → 审 → 修 流水线。**不要把 Step 4 当一步**——它有 8 个不可跳过的子步骤：
-
-```
-4-pre  读护栏清单（priming）
-4a     长推 print + FACTS 行（强制读完）
-4b     Podcast 分块 print + BLOCK_n 摘要（强制读完）
-4c     写中文 digest（v1 风格）
-4d     codex 事实审计（异源）
-4e     应用事实 issue（一轮）
-4f     codex 通顺审（异源）
-4g     应用通顺 issue（一轮）
-```
-
-每一步都设计成「有产物」——产物不在，下游能看出来。这是过去靠"我下次细心"反复翻车后定下的结构性 gate。
-
-### Step 4-pre: 读护栏清单（priming）
-
-每次跑 digest 写作前，**必须**读一遍 `~/.follow-builders/guardrails.md`：
-
-```bash
-cat ~/.follow-builders/guardrails.md
-```
-
-这份清单是滚动更新的写作风格防线，沉淀了**所有过去踩过的坑**——长推 + 编号列表 + 熟悉领域 = 模板补全高危区，priming 后写作时会主动放慢。
-
-每次跑完后如果踩到新坑，把新条目沉淀进 `## 滚动更新区`——3 个月后这是一份基于实战的防御清单，不是抽象决心。
-
-如果文件不存在（首次部署 / 用户机器没有），告诉用户初始化：复制一份模板到 `~/.follow-builders/guardrails.md`，再继续。
-
-### Step 4a: 长推 print + FACTS 行（强制读完）
-
-对每条 **>1500 字符** 的推文，写中文摘要**之前**必须先 print 原文 + 写一行 FACTS。这一步把"读完"外化成有产物的硬步骤——**没有 FACTS 行 = 没读完**。
-
-```bash
-DATE=$(date +%Y-%m-%d)
-python3 -c "
-import json
-d = json.load(open('/tmp/fb-prepare-${DATE}.json'))
-for b in d.get('x', []):
-    for t in b.get('tweets', []):
-        text = t.get('text', '')
-        if len(text) > 1500:
-            print('---')
-            print(f'[{b.get(\"handle\")}/{t.get(\"url\",\"\").split(\"/\")[-1]}]')
-            print(text)
-            print()
-"
-```
-
-每条长推 print 之后，**立刻**在主 agent 输出里写：
-
-```
-[handle/tweet_id]
-FACTS: <主要 claim>; <列表项 1/2/3>; <数字>; <定量声明>
-```
-
-例（Karpathy three new horizons 长推）：
-```
-FACTS: three new horizons = (1) menugen 图入图出；(2) install .md skills 替代 install .sh；(3) LLM 知识库
-       jaggedness = verifiability + 经济学（RL 训练分布按 revenue/TAM）
-       agent-native 经济：传感器/执行器/逻辑；agentic engineering 新工种
-```
-
-写出 FACTS 行**之后**再写中文摘要。模板补全发生在「绕开 raw 直接写中文」的路径上，FACTS 行就是堵死这条路径——5/2 上午 Karpathy #2 #3 替换事故，如果有 FACTS 行根本写不出来。
-
-短推 / 链接推（<1500 字符）跳过 FACTS。
-
-### Step 4b: Podcast 分块 print + BLOCK_n 摘要（强制读完）
-
-Podcast transcript 通常 >20KB，整体 Read 容易扫读 + 漏末尾。改成分 5000 字符块 print，**每块之后立刻写一行 BLOCK_n 摘要**：
-
-```bash
-DATE=$(date +%Y-%m-%d)
-python3 -c "
-import json
-d = json.load(open('/tmp/fb-prepare-${DATE}.json'))
-for p in d.get('podcasts', []):
-    t = p.get('transcript', '')
-    for i in range(0, len(t), 5000):
-        print(f'=== BLOCK {i//5000 + 1} ({i}:{min(i+5000, len(t))}) ===')
-        print(t[i:i+5000])
-        print()
-"
-```
-
-每块 print 之后**立刻**写：
-
-```
-BLOCK_n (start:end) : <这块讲了什么，一行 ≤120 字>
-```
-
-全部块过完**再**写中文摘要。BLOCK_n 摘要会把 transcript 末尾内容显式拉进 context，5/2 上午"AGI 2030 之前到来"那种事故（末尾 over/under 段没读到）就不会复发。
-
-### Step 4c: 写中文 digest（v1 风格，editorial 自由）
-
-**Your ONLY job is to remix the content from the JSON.** Do NOT fetch anything
-from the web, visit any URLs, or call any APIs. Everything is in the JSON.
+**Your ONLY job is to remix the content from the JSON.** Do NOT fetch anything from the web, visit any URLs, or call any APIs. Everything is in the JSON.
 
 Read the prompts from the `prompts` field in the JSON:
 - `prompts.digest_intro` — overall framing rules
 - `prompts.summarize_podcast` — how to remix podcast transcripts
 - `prompts.summarize_tweets` — how to remix tweets
+- `prompts.summarize_blogs` — how to remix blog posts
 - `prompts.translate` — how to translate to Chinese
 
-**Tweets (process first):** The `x` array has builders with tweets. Process one at a time:
-1. Use their `bio` field for their role (e.g. bio says "ceo @box" → "Box CEO Aaron Levie")
-2. Summarize their `tweets` using `prompts.summarize_tweets`
-3. Every tweet MUST include its `url` from the JSON
+**Process order:**
+1. **Tweets first** — `x` array. For each builder: use `bio` field to infer their role; summarize tweets per `prompts.summarize_tweets`; every tweet MUST include its `url`.
+2. **Blogs second** — `blogs` array (already filtered by Step 2.5). Each entry: summarize per `prompts.summarize_blogs`; include its `url`.
+3. **Podcast third** — `podcasts` array, at most 1 episode (already filtered by Step 2.5). Summarize transcript per `prompts.summarize_podcast`; use `name`/`title`/`url` from JSON, NOT from the transcript.
 
-**Podcast (process second):** The `podcasts` array has at most 1 episode. If present:
-1. Summarize its `transcript` using `prompts.summarize_podcast`
-2. Use `name`, `title`, and `url` from the JSON object — NOT from the transcript
-
-Assemble the digest following `prompts.digest_intro`.
+Assemble per `prompts.digest_intro`.
 
 **ABSOLUTE RULES:**
 - NEVER invent or fabricate content. Only use what's in the JSON.
@@ -512,232 +455,31 @@ Assemble the digest following `prompts.digest_intro`.
 - Do NOT guess job titles. Use the `bio` field or just the person's name.
 - Do NOT visit x.com, search the web, or call any API.
 
-**Format conventions (strict — these are how the digest looked yesterday, must match every day):**
+**写作克制原则（5/4 郭大大拍板，必读）：**
 
-1. **Link format**: Every URL on its own line, preceded by a blank line, as `🔗 <url>` autolink. Tweet/blog → `🔗`, podcast/video → `🎬`. Never bare URLs, never inline.
+这是核心。早上"加规则双轮审计版"被明确否决，回到 upstream 风格。
 
-2. **Heading levels**:
-   - H2 sections use **Title Case**, not ALL CAPS: `## X / Twitter`, `## Official Blogs`, `## Podcasts` (NOT `## TWITTER`).
-   - H3 builders use `Name · Role` order, with `·` (middle dot) separator: `### Aaron Levie · Box CEO`, `### Garry Tan · Y Combinator CEO` (NOT `### Box CEO Aaron Levie`).
+1. **不脑补人设**。Peter Yang 推「marie kondo your local files」就只是用 marie kondo 整理梗，**不是**「家庭整理顾问」。原文没说的人设不准添。
+2. **不带感情色彩**。`reselling tokens` 是中性商业事实，译"转售 token"，**不是**"倒卖 token"。译词带贬褒前自问一句：原文是这个语气吗。
+3. **不强加 editorial / 不加预测**。upstream summarize-tweets 规定 2-4 句一个 builder。**不加**「如果他对了，今天大多数 IDE 和办公软件的窗口布局都得重新设计」这种自我预测。
+4. **upstream 的 prompts 是唯一指令**。不读 guardrails.md（保留为历史沉淀，不强制读），不跑 codex 双轮审计，不做 FACTS / BLOCK / 公司锚点等任何写作前 priming。直接按 prompts.summarize_* 写。
+5. **跳过没干货的 builder**。digest_intro 第 55 行：「If you have nothing real for a builder, skip them entirely」。短转推 / quote 反应 / 萌娃推 / 不相关政治议题——直接跳过该 builder，不要硬写。
 
-3. **Takeaway / 核心观点 use blockquote**, NOT bold inline:
-   - English: `> The Takeaway: ...`
-   - Chinese: `> 核心观点：...`
-   - NEVER: `**The Takeaway:** ...` or `**核心观点：** ...`
-
-4. **Podcast bilingual layout**: English summary and Chinese translation each get their **own H3** (translated title), separated by horizontal rule `---`. Example:
-
-```
-### No Priors · Scaling Global Organizations with ServiceNow CEO Bill McDermott
-
-> The Takeaway: ...
-
-<English summary paragraphs>
-
-🎬 <https://www.youtube.com/watch?v=xxx>
-
----
-
-### No Priors · 与 ServiceNow CEO Bill McDermott 聊在 AI 时代如何扩张全球化组织
-
-> 核心观点：...
-
-<中文摘要>
-
-🎬 <https://www.youtube.com/watch?v=xxx>
-```
-
-5. **X/Twitter bilingual layout**: English summary, then Chinese translation directly below (no extra H3). Each followed by `🔗 <url>`. See Step 5 example.
-
-6. **Footer**: digest MUST end with this exact line (after a `---` separator):
-   ```
-   Generated through the [Follow Builders skill](https://github.com/zarazhangrui/follow-builders).
-   ```
-   Use Markdown link syntax `[text](url)`. Do NOT use bare URL or `text: url` form.
-
-Violating any of these forces a manual fix every morning. Match yesterday's format exactly.
-
-### Step 4d: codex 事实审计（一轮，不可跳过）
-
-写完 Step 4c 初稿、落到 `~/.follow-builders/digests/${DATE}.md` 后，跑一轮**异源**事实审计。codex 是不同模型 = 不同先验，恰好抓主 agent 自己看不见的「先验自动补全」事故。
-
-**前置：digest 草稿落正式路径**
-
-直接写到 `~/.follow-builders/digests/${DATE}.md`（4d/4e/4f/4g 都在这个文件上原地改）。
-
-**跑 codex task（read-only）**
-
-`task` 命令默认 read-only，不加 `--write`。raw 走 Step 2 的 tee 快照。
-
-```bash
-DATE=$(date +%Y-%m-%d)
-DRAFT=~/.follow-builders/digests/${DATE}.md
-RAW=/tmp/fb-prepare-${DATE}.json
-OUT=/tmp/fb-factcheck-${DATE}.json
-ERR=/tmp/fb-factcheck-${DATE}.err
-CODEX_SCRIPT=~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
-
-node "$CODEX_SCRIPT" task "$(cat <<EOF
-You are a fact-checker for a Chinese AI industry digest. Read both files below, audit hard factual claims only.
-
-Inputs:
-- Digest (Chinese Markdown): $DRAFT
-- Raw source feed (JSON): $RAW
-
-Audit ONLY these claim types:
-- Specific names (people / products / companies that appear in raw)
-- Numbered list items inside enumerated lists ("three things", "N 个例子")
-- Dates and numbers and percentages
-- Quoted strings (direct verbatim quotes)
-- Quantitative attributions: "first / only / Top N / leading / fastest"
-
-EXEMPTIONS (skip — do NOT report these):
-- Role / title in H3 headings (Cursor 设计负责人, OpenClaw 创始人, OpenAI CEO, etc.) — bio inference is allowed
-- Industry idiom translation (raw "non-coding computer work" → digest "computer-use agent" type rephrasing)
-- Footer template line about Follow Builders / md-to-pdf
-- Soft interpretive paraphrase that is reasonable extrapolation
-- Industry common knowledge about well-known people/products
-
-Output ONLY a JSON array. Schema:
-[
-  {
-    "location": "<builder name or section heading>",
-    "claim": "<exact text snippet from digest>",
-    "raw_excerpt": "<closest matching text from raw, or null if absent>",
-    "verdict": "supported" | "contradicted" | "unsupported",
-    "severity": "hard_fact" | "quantitative"
-  }
-]
-
-Only include "contradicted" or "unsupported" entries. Skip "supported" to keep output small.
-
-HARD CONSTRAINTS:
-- Do NOT comment on style, tone, length, readability, word choice, or Chinese phrasing.
-- Do NOT suggest editorial changes or rewrites.
-- Do NOT browse the web.
-- Read-only. Output JSON array only.
-EOF
-)" > $OUT 2> $ERR
-RC=$?
-
-if [ $RC -ne 0 ]; then
-  echo "❌ codex 事实审失败 (exit $RC)，stderr:"
-  cat $ERR
-  echo "STOP：codex 不可用。问用户：'修复后重跑 还是 裸发未经审计的版本（不推荐）？'"
-  exit 1
-fi
-
-python3 -c "import json; d=json.load(open('$OUT')); assert isinstance(d, list)" 2>/dev/null \
-  || { echo "❌ codex 输出非合法 JSON 数组，看 $OUT 排查"; exit 1; }
-```
-
-如果 codex 失败或输出非 JSON：**不要继续**，问用户修复后重跑还是裸发。
-
-### Step 4e: 应用事实 issue（一轮）
-
-读 `$OUT` 的 JSON 数组，按 verdict + severity 处理：
-
-| verdict | severity | 处理 |
-|---|---|---|
-| `contradicted` | * | **必改**：精读 raw_excerpt 上下文，改回真实版本 |
-| `unsupported` | `hard_fact` | **必改**：回 raw 找替代，找不到就删该具体声明（保留段落骨架） |
-| `unsupported` | `quantitative` | **必改**：降级措辞（"第一" → "代表性"，"100%" → "几乎全部"，"唯一" → "少数"） |
-
-**Builder 段重写阈值**：单个 builder 出现 ≥3 条红 → 不做单点修补，**精读该 builder 的 raw 推文，整段重写**。这种密集报错说明这一段从根上就是脑补的。
-
-**精读 = 定点突破**：只读 codex 指出的那条推文 / 那段 transcript，不全篇回炉。
-
-**只此一轮**：改完直接进 4f，不重新跑 codex。
-
-修订原地写回 `$DRAFT`（不要另存新文件，4f 还要用）。
-
-### Step 4f: codex 通顺审（一轮，不可跳过）
-
-事实修完后，跑第二轮 codex —— 这次审中文通顺度，扮演飞书群里完全不懂技术的同事第一次读。这一轮是为了挡住「半翻译」「未译术语穿插」「跨段呼应」「主语切换混乱」这类同源 self-review 看不见的盲点。
-
-```bash
-DATE=$(date +%Y-%m-%d)
-DRAFT=~/.follow-builders/digests/${DATE}.md
-OUT=/tmp/fb-readability-${DATE}.json
-ERR=/tmp/fb-readability-${DATE}.err
-CODEX_SCRIPT=~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
-
-node "$CODEX_SCRIPT" task "$(cat <<EOF
-You are a Chinese-language readability reviewer. Read the digest as if you were a non-technical Feishu group member reading it for the first time.
-
-Input:
-- Digest (Chinese Markdown): $DRAFT
-
-Output ONLY a JSON array:
-[
-  {
-    "location": "<builder name or section heading>",
-    "issue_type": "untranslated_term" | "awkward_phrasing" | "quote_misuse" | "cross_section_reference" | "logic_break",
-    "claim": "<original Chinese sentence from digest>",
-    "suggestion": "<a concrete revised Chinese sentence>"
-  }
-]
-
-issue_type guide:
-- untranslated_term: 第一次出现的英文专业术语没有中文释义或译名（in silico / emergent / virtual cell / agentic engineering / opinionated 等）。允许保留专有名词如 AlphaFold / WeatherNext / Cognition 等。
-- awkward_phrasing: 一口气读不下去 / 卡顿 / 长定语 / 主谓不搭 / 半口语判断词（"可以并读"/"夸张地高"/"无所不包" 等）
-- quote_misuse: 中文引号用得像反讽 / 能去掉的多余引号
-- cross_section_reference: 跨段呼应别扭（"这呼应了同日 X 提的…"）
-- logic_break: 段内前后逻辑断裂 / 前言不搭后语
-
-HARD CONSTRAINTS:
-- Do NOT comment on factual correctness (separate audit).
-- Do NOT suggest editorial style / tone / length changes.
-- Do NOT recommend adding extra context or examples.
-- Do NOT propose removing editorial commentary, metaphors, or analogies.
-- Do NOT browse the web.
-- Read-only. Output JSON only.
-
-Aim for 3-10 issues. If clean, output [].
-EOF
-)" > $OUT 2> $ERR
-RC=$?
-
-if [ $RC -ne 0 ]; then
-  echo "❌ codex 通顺审失败 (exit $RC)，stderr:"
-  cat $ERR
-  echo "STOP：通顺审不可用。问用户怎么办。"
-  exit 1
-fi
-
-python3 -c "import json; d=json.load(open('$OUT')); assert isinstance(d, list)" 2>/dev/null \
-  || { echo "❌ codex 输出非合法 JSON 数组，看 $OUT 排查"; exit 1; }
-```
-
-### Step 4g: 应用通顺 issue（一轮）
-
-读 `$OUT` JSON 数组，按 issue_type 分流处理 codex 给的 `suggestion`：
-
-| issue_type | 默认处理 |
-|---|---|
-| `untranslated_term` | **接受**（按 suggestion 加中文译名/括注，或保留英文 + 中文括注，例 `orchestrator` → `编排者（orchestrator）`） |
-| `awkward_phrasing` | **接受** suggestion |
-| `quote_misuse` | **接受**（去掉引号或重写） |
-| `cross_section_reference` | **接受**（删跨段呼应） |
-| `logic_break` | **主 agent 判断**（结合 raw 重新组织段内逻辑，不无脑套 suggestion） |
-
-**Editorial 不改**：codex 的 suggestion 如果碰到隐喻、判断、类比、修辞性引号、editorial 钩子，主 agent **主动拒绝**——这些是 v1 风格的核心，2026-05-02 v2/v3 反例的教训就是不能让 reviewer 砍 editorial。
-
-**有歧义的术语豁免**（如 `agent-native` 该不该译）→ 主 agent 判断，默认保留有行业辨识度的英文 + 第一次出现给中文括注（例 `agent-native（agent 原生）经济`）。
-
-**只此一轮**：改完直接进 Step 5（语言模式应用），不重新跑 codex。
-
-修订原地写回 `$DRAFT`。
+写完直接进 Step 5。
 
 ### Step 5: Apply language
 
 Read `config.language` from the JSON:
 - **"en":** Entire digest in English.
-- **"zh":** Entire digest in Chinese. Follow `prompts.translate`. Additional rules:
-  - **H2 section headings translate to Chinese**: `## 推文` (was `X / Twitter`), `## 官方博客` (was `Official Blogs`), `## 播客` (was `Podcasts`).
-  - **H3 builder names**: keep proper names in English (Aaron Levie, Garry Tan, Sam Altman are not translated). Roles can stay in their original form (`Box CEO`, `Y Combinator CEO`) — these are widely recognized titles. Format: `### Aaron Levie · Box CEO`.
-  - **Blog/Podcast H3 titles translate to Chinese**.
-  - **Podcast section uses single H3** (Chinese only) — no English/Chinese H3 split (the `---` between English and Chinese podcast blocks from bilingual mode does NOT apply here).
+- **"zh":** Entire digest in Chinese. Follow `prompts.translate`. Additional rules（zh 模式专用）:
+  - **H2 section headings 译中文**: `## 推文` / `## 官方博客` / `## 播客`
+  - **H3 builder 写法 = `### Role · Name`**（5/4 郭大大拍板：role 内容按 upstream summarize-tweets 直接推导，**不**强行翻译成中文称谓；格式上用中点 `·` 分隔 Role 和 Name）。
+    - **Role 内容**：完全按 upstream 风格，从 bio 直接得到（`ceo @box` → `Box CEO`、`partner @fpvventures` → `FPV Ventures Partner`、`ceo @replit` → `Replit CEO`）。**不要**自行翻成「主持人 / 创办人 / 研究员 / 总监」之类的中文称谓——bio 是英文就保留英文 role。
+    - 例：`### Box CEO · Aaron Levie`、`### Replit CEO · Amjad Masad`、`### FPV Ventures Partner · Nikunj Kothari`、`### OpenAI President · Greg Brockman`
+    - bio 没明说 role → 只写 Name，**不脑补**（包括"主理人 / 大佬 / 大神 / 大咖 / KOL / 博主"这类自媒体腔，永禁）
+    - 反例：bio 是 "@latentspacepod" 这种简略 affiliation，不要写成 "Latent Space 主持人"——直接 `### swyx` 就行
+  - **Blog/Podcast H3 titles 译中文**。
+  - **Podcast section uses single H3**（中文 only）。
 - **"bilingual":** Interleave English and Chinese **paragraph by paragraph**.
   For each builder's tweet summary: English version, then Chinese translation
   directly below, then the next builder. For the podcast: English summary,
@@ -906,3 +648,93 @@ When the user invokes `/ai` or asks for their digest manually:
 1. Skip cron check — run the digest workflow immediately
 2. Use the same fetch → remix → deliver flow as the cron run
 3. Tell the user you're fetching fresh content (it takes a minute or two)
+
+---
+
+## Reference: Format Spec
+
+**写完 4c 中文 digest 草稿后，按这一节自查一遍格式**。这一节是格式约束的唯一权威——写作 prompt 不重复这些规则，避免写作时分心抢 editorial 注意力。
+
+格式正确是 PDF 排版（md-to-pdf claude-white-larger 主题）的必要条件，自查不能跳。
+
+### 1. Link 格式
+
+- 每条 URL 单独一行，前面留空行
+- 自动链接形式：`🔗 <url>`（推文/博客）或 `🎬 <url>`（播客/视频）
+- ❌ 不准裸 URL（不带 `<>`）
+- ❌ 不准内联（与中文同一行）
+
+### 2. Heading levels
+
+- **H2 sections** 用中文（zh 模式）：`## 推文` / `## 官方博客` / `## 播客`
+  - English/bilingual 模式 Title Case：`## X / Twitter` / `## Official Blogs` / `## Podcasts`
+  - ❌ 不准 ALL CAPS（`## TWITTER`）
+- **H3 builders** 用 `Role · Name`（**中点 `·` 分隔**，Role 在前 Name 在后）。Role 内容**直接按 upstream** 从 bio 推导（保留英文，不脑补中文称谓）。
+  - 例：`### Box CEO · Aaron Levie`、`### Replit CEO · Amjad Masad`、`### FPV Ventures Partner · Nikunj Kothari`
+  - bio 没明说 role → 只写 `### Name`，**不脑补**
+  - ❌ 不准 `### Aaron Levie · Box CEO`（顺序反了）；❌ 不准 `### Box CEO Aaron Levie`（无中点分隔，5/4 早上中间方案，已废弃）
+  - 永禁用：「主理人 / 大佬 / 大神 / 大咖 / KOL / 博主」
+
+### 3. Takeaway / 核心观点 + blockquote 使用
+
+**blockquote `>` 只在 podcast 段开头的「核心观点 / The Takeaway」用**，推文段和博客段**绝对不准**用 blockquote。
+
+- ✅ podcast：`> 核心观点：...` / `> The Takeaway: ...`
+- ❌ 推文段不准把名人引语包成 blockquote（5/4 郭大大反馈：Dan Shipper 段把推文判断包成绿色引用块视觉太重，应该跟正文段融合）
+- ❌ 博客段不准用 blockquote（同理）
+- 推文段如果想引用名人原话，用普通段落 + 中文引号 「...」 或英文引号 "..."；不要用 `>` 引用块
+- ❌ 不准 `**The Takeaway:** ...` 或 `**核心观点：** ...`（只能用 blockquote 形式，且仅 podcast）
+
+### 4. Podcast bilingual 布局
+
+英文摘要和中文翻译各自一个 H3（翻译过的标题），中间用横线 `---` 分隔：
+
+```
+### No Priors · Scaling Global Organizations with ServiceNow CEO Bill McDermott
+
+> The Takeaway: ...
+
+<English summary paragraphs>
+
+🎬 <https://www.youtube.com/watch?v=xxx>
+
+---
+
+### No Priors · 与 ServiceNow CEO Bill McDermott 聊在 AI 时代如何扩张全球化组织
+
+> 核心观点：...
+
+<中文摘要>
+
+🎬 <https://www.youtube.com/watch?v=xxx>
+```
+
+zh 模式只出中文 H3，不要这个 `---` 分隔。
+
+### 5. X/Twitter bilingual 布局
+
+英文摘要、中文翻译直接上下相邻（不另开 H3）。每段后面跟 `🔗 <url>`。详见 Step 5 example。
+
+### 6. Footer
+
+Digest **必须**以这一行结尾（前面加 `---` 分隔线）：
+
+```
+Generated through the [Follow Builders](https://github.com/zarazhangrui/follow-builders) and [md-to-pdf](https://github.com/WeAIClub/md-to-pdf) skill.
+```
+
+Markdown 链接语法 `[text](url)`。❌ 不准用裸 URL 或 `text: url` 形式。
+
+### 7. H1 标题
+
+文档第一行必须是：
+
+```
+# AI 早报 · YYYY-MM-DD
+```
+
+YYYY-MM-DD 是真实日期（先 `date "+%Y-%m-%d"` 拿真实系统时间，**不要**信 context 里的日期）。
+
+### 8. H1 后立即进 H2
+
+H1 之后**绝对不准**加任何「今日军情」「概览」「lead」「索引」段。直接进第一个 H2。读者要直接看每段，不要被预先剧透。（5/4 早上踩过这个坑）
