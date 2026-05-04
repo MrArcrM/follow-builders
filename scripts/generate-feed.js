@@ -661,6 +661,139 @@ async function fetchXContent(xAccounts, bearerToken, state, errors) {
 
 // -- Blog Fetching (HTML scraping) -------------------------------------------
 
+// Generic publishedAt extractor — tries multiple standard sources in order:
+//   1. <meta property="article:published_time" content="..."> (OpenGraph)
+//   2. <meta name="article:published_time" ...> / itemprop="datePublished"
+//   3. <time datetime="..."> inside <article> (or first one in page)
+//   4. JSON-LD: recursively walk all ld+json blocks and any @graph arrays
+//      looking for datePublished / dateCreated, regardless of @type shape
+//      (handles @type as array, nested @graph, WebPage wrapping BlogPosting).
+// Returns an ISO string or null. Never throws.
+function extractPublishedAtFromHtml(html) {
+  if (!html) return null;
+
+  // 1. OpenGraph meta — both attribute orderings
+  const ogMatch =
+    html.match(
+      /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["']/i,
+    ) ||
+    html.match(
+      /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']article:published_time["']/i,
+    );
+  if (ogMatch) return normalizeDate(ogMatch[1]);
+
+  // 2. itemprop / name variants
+  const itempropMatch =
+    html.match(
+      /<meta[^>]+itemprop=["']datePublished["'][^>]+content=["']([^"']+)["']/i,
+    ) ||
+    html.match(
+      /<meta[^>]+name=["']article:published_time["'][^>]+content=["']([^"']+)["']/i,
+    ) ||
+    html.match(
+      /<meta[^>]+name=["']pubdate["'][^>]+content=["']([^"']+)["']/i,
+    );
+  if (itempropMatch) return normalizeDate(itempropMatch[1]);
+
+  // 3. <time datetime="..."> — prefer one inside <article>, fall back to first
+  const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+  const articleScope = articleMatch ? articleMatch[1] : html;
+  const timeMatch = articleScope.match(/<time[^>]+datetime=["']([^"']+)["']/i);
+  if (timeMatch) return normalizeDate(timeMatch[1]);
+
+  // 4. JSON-LD — walk every ld+json block and recurse for datePublished
+  const jsonLdRegex =
+    /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let ldMatch;
+  while ((ldMatch = jsonLdRegex.exec(html)) !== null) {
+    try {
+      const parsed = JSON.parse(ldMatch[1]);
+      const found = findDatePublished(parsed);
+      if (found) return normalizeDate(found);
+    } catch {
+      // Not valid JSON, skip
+    }
+  }
+
+  // 5. Visible "Published <date>" text — common on Anthropic / Sanity-rendered
+  // pages where no structured metadata is emitted. Only accepts month-name
+  // formats to avoid grabbing arbitrary numeric content.
+  const publishedTextMatch = html.match(
+    /Published[\s:]*<\/?[^>]*>?\s*([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4})/,
+  );
+  if (publishedTextMatch) return normalizeDate(publishedTextMatch[1]);
+
+  // 6. Next.js App Router RSC streaming payload — Anthropic embeds Sanity
+  // article data in self.__next_f.push() chunks. The article's own _createdAt
+  // is the first one in the page (image children appear later). We accept
+  // that small risk in exchange for getting any date at all.
+  const rscMatch = html.match(
+    /"_createdAt"\s*:\s*"(\d{4}-\d{2}-\d{2}T[^"]+)"/,
+  );
+  if (rscMatch) return normalizeDate(rscMatch[1]);
+
+  return null;
+}
+
+// Recursively searches a JSON-LD value for the article-like node — a node
+// that has both headline (or name) AND datePublished, or whose @type matches
+// Article/BlogPosting/NewsArticle. Handles arrays, @graph wrappers, and
+// @type-as-array shapes. Returns the matching object or null.
+function findArticleNode(node) {
+  if (!node) return null;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const hit = findArticleNode(item);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof node !== "object") return null;
+  const type = node["@type"];
+  const types = Array.isArray(type) ? type : type ? [type] : [];
+  const isArticleType = types.some((t) =>
+    /^(Blog)?(Posting|Article|NewsArticle|TechArticle)$/i.test(t),
+  );
+  if (isArticleType && (node.datePublished || node.headline)) return node;
+  if (node.datePublished && (node.headline || node.name)) return node;
+  if (node["@graph"]) {
+    const hit = findArticleNode(node["@graph"]);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// Recursively searches a JSON-LD value (object, array, or @graph wrapper)
+// for a datePublished / dateCreated string. Returns the first hit or null.
+function findDatePublished(node) {
+  if (!node) return null;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const hit = findDatePublished(item);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof node !== "object") return null;
+  if (typeof node.datePublished === "string") return node.datePublished;
+  if (typeof node.dateCreated === "string") return node.dateCreated;
+  if (node["@graph"]) {
+    const hit = findDatePublished(node["@graph"]);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// Normalizes a date string to ISO 8601, or returns the original string if
+// Date parsing fails (better to surface a weird value than silently null).
+function normalizeDate(raw) {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  const d = new Date(trimmed);
+  if (!isNaN(d.getTime())) return d.toISOString();
+  return trimmed;
+}
+
 // Scrapes the Anthropic Engineering blog index page.
 // The page is a Next.js app that embeds article data as JSON in <script> tags.
 // We parse that JSON to extract article metadata (title, slug, date, summary).
@@ -760,8 +893,15 @@ function extractAnthropicArticleContent(html) {
         pageProps?.post || pageProps?.article || pageProps?.entry || pageProps;
       title = post?.title || "";
       author = post?.author?.name || post?.authors?.[0]?.name || "";
-      publishedAt =
-        post?.publishedOn || post?.publishedAt || post?.date || null;
+      const rawPublished =
+        post?.publishedOn ||
+        post?.publishedAt ||
+        post?.publishDate ||
+        post?.firstPublishedAt ||
+        post?._createdAt ||
+        post?.date ||
+        null;
+      publishedAt = rawPublished ? normalizeDate(rawPublished) : null;
 
       // Extract text from the body blocks (Sanity CMS portable text format)
       const body = post?.body || post?.content || [];
@@ -775,7 +915,10 @@ function extractAnthropicArticleContent(html) {
         }
         content = textParts.join("\n\n");
       }
-      if (content) return { title, author, publishedAt, content };
+      if (content) {
+        if (!publishedAt) publishedAt = extractPublishedAtFromHtml(html);
+        return { title, author, publishedAt, content };
+      }
     } catch {
       // Fall through to HTML stripping
     }
@@ -803,6 +946,7 @@ function extractAnthropicArticleContent(html) {
     .replace(/\s+/g, " ")
     .trim();
 
+  if (!publishedAt) publishedAt = extractPublishedAtFromHtml(html);
   return { title, author, publishedAt, content };
 }
 
@@ -814,18 +958,24 @@ function extractClaudeBlogArticleContent(html) {
   let publishedAt = null;
   let content = "";
 
-  // Try JSON-LD structured data first (most reliable for metadata)
+  // Try JSON-LD structured data first (most reliable for metadata).
+  // Walk every block and recurse — @type can be array, may be nested under
+  // @graph, or wrapped in WebPage. Match by presence of headline+datePublished
+  // rather than strict @type equality.
   const jsonLdRegex =
-    /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
+    /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
   let jsonLdMatch;
   while ((jsonLdMatch = jsonLdRegex.exec(html)) !== null) {
     try {
-      const ld = JSON.parse(jsonLdMatch[1]);
-      if (ld["@type"] === "BlogPosting" || ld["@type"] === "Article") {
-        title = ld.headline || ld.name || "";
-        author = ld.author?.name || "";
-        publishedAt = ld.datePublished || null;
-        break;
+      const parsed = JSON.parse(jsonLdMatch[1]);
+      const article = findArticleNode(parsed);
+      if (article) {
+        title = article.headline || article.name || title;
+        author = article.author?.name || article.author?.[0]?.name || author;
+        if (article.datePublished) {
+          publishedAt = normalizeDate(article.datePublished);
+        }
+        if (publishedAt) break;
       }
     } catch {
       // Not valid JSON-LD, skip
@@ -880,6 +1030,7 @@ function extractClaudeBlogArticleContent(html) {
       .trim();
   }
 
+  if (!publishedAt) publishedAt = extractPublishedAtFromHtml(html);
   return { title, author, publishedAt, content };
 }
 
