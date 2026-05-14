@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>{{TITLE}}</title>
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --ink-soft: #444;
+    --ink-faint: #888;
+    --bg: #fdfcf9;
+    --rule: #e7e3da;
+    --quote-bg: #f4efe6;
+    --quote-bar: #c9a96b;
+    --link: #b85c2a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 17px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+  h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .meta {
+    color: var(--ink-faint); font-size: 14px;
+    margin-bottom: 40px; padding-bottom: 24px;
+    border-bottom: 1px solid var(--rule);
+  }
+  h2 {
+    font-size: 22px; font-weight: 700; margin: 56px 0 24px;
+    padding-left: 12px; border-left: 4px solid var(--quote-bar);
+    letter-spacing: -0.01em;
+  }
+  h3 { font-size: 18px; font-weight: 600; margin: 32px 0 12px; color: var(--ink); }
+  h3 .role { color: var(--ink-faint); font-weight: 500; font-size: 15px; }
+  p { margin: 0 0 14px; color: var(--ink-soft); }
+  blockquote {
+    margin: 16px 0 20px; padding: 14px 18px;
+    background: var(--quote-bg); border-left: 3px solid var(--quote-bar);
+    border-radius: 4px; color: var(--ink);
+    font-size: 15.5px; line-height: 1.7;
+  }
+  blockquote p { margin: 0; color: var(--ink); }
+  .link-line { margin: 8px 0 8px; font-size: 14px; }
+  .link-line a { color: var(--link); text-decoration: none; word-break: break-all; }
+  .link-line a:hover { text-decoration: underline; }
+  .quote-en { font-style: italic; color: var(--ink); }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 56px 0 24px; }
+  footer { color: var(--ink-faint); font-size: 13px; line-height: 1.6; }
+  footer a { color: var(--ink-faint); text-decoration: underline; }
+  strong { color: var(--ink); }
+  @media (max-width: 600px) {
+    body { font-size: 16px; }
+    .container { padding: 32px 18px 64px; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 20px; }
+    h3 { font-size: 17px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+{{BODY}}
+</div>
+</body>
+</html>
