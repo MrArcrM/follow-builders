@@ -314,7 +314,7 @@ Before loading config, auto-sync the skill with upstream (郭大大's fork 追
 zarazhangrui/follow-builders)。Run:
 
 ```bash
-~/Documents/ClaudeCodeWorkSpace/agents/scout-eagle/check-upstream.sh --sync
+~/Documents/ClaudeCodeWorkSpace/agents/honey-bee/check-upstream.sh --sync
 ```
 
 - Exit 0, no output about updates → upstream 无实质更新，continue 到 Step 1。
@@ -522,62 +522,85 @@ cat > ~/.follow-builders/digests/$(date +%Y-%m-%d).md << 'DIGESTEOF'
 DIGESTEOF
 ```
 
-**6b. Convert digest .md → .pdf (always):**
+**6b. Convert digest .md → .html (always):**
 
-Output filename uses the Chinese-friendly title as the basename (so it shows up as `AI 早报 2026-04-27.pdf` in the Feishu share group, not just a bare date).
+⚠️ **5/15 起 PDF 流程已废弃** — 不再调用 md-to-pdf，不再发 PDF 附件到飞书。统一走 HTML + share-html，移动端阅读体验更好，链接可点、看完即焚不占飞书云盘。
 
 ```bash
 DATE=$(date +%Y-%m-%d)
-~/.claude/skills/md-to-pdf/scripts/md_to_pdf.sh \
+SKILL_DIR=/Users/guoqu/Documents/ClaudeCodeWorkSpace/agents/honey-bee/.claude/skills/follow-builders
+HTML_OUT=/Users/guoqu/Documents/ClaudeCodeWorkSpace/agents/honey-bee/data/ai-digest-html/${DATE}.html
+mkdir -p "$(dirname "$HTML_OUT")"
+python3 "$SKILL_DIR/scripts/md_to_html.py" \
   ~/.follow-builders/digests/${DATE}.md \
-  "$HOME/.follow-builders/digests/AI 早报 ${DATE}.pdf" \
-  claude-white-larger
+  "$SKILL_DIR/templates/digest.html" \
+  "$HTML_OUT"
 ```
 
-Use `claude-white-larger` theme (body 13.5pt) for mobile readability in the share group. Do NOT use the default `claude-white` (body 10.5pt — too small on phone).
+转换器 `scripts/md_to_html.py` 是 follow-builders 本地零依赖脚本，只支持 digest 实际用到的 markdown 子集（H1/H2/H3 + 段落 + blockquote + bold + 自动链接 `<url>` + markdown 链接 `[text](url)` + `---` 分隔 + footer）。模板 `templates/digest.html` 是 claude-white 风格的 self-contained HTML（inline CSS，移动端自适应，noindex 防爬）。
 
-If md-to-pdf fails, log the error but do NOT stop — fall back to sending the .md file in 6c.
+如果脚本失败，日志记录但**不要 fallback 到 PDF**——直接停在 6b 报错，不要继续 6c/6d。
 
-**6c. Send digest PDF (or .md fallback) to Feishu group (optional, configured per user):**
+**6c. Upload HTML to gqshare.pages.dev (always, if 6b succeeded):**
+
+复用 `/share-html` skill 的核心逻辑：copy 到 share-html 数据目录加 6 位 hash 防猜 → wrangler 部署 → 拼 URL → append 到 share log。
+
+```bash
+DATE=$(date +%Y-%m-%d)
+SHARE_DIR=~/Documents/ClaudeCodeWorkSpace/data/share-html
+HASH=$(openssl rand -hex 3)
+SLUG="ai-digest-${DATE}-${HASH}"
+TARGET="$SHARE_DIR/${SLUG}.html"
+cp /Users/guoqu/Documents/ClaudeCodeWorkSpace/agents/honey-bee/data/ai-digest-html/${DATE}.html "$TARGET"
+
+# wrangler 需要 node v22+，nvm 装在 ~/.nvm/versions/node/v22.20.0/
+export PATH=~/.nvm/versions/node/v22.20.0/bin:$PATH
+cd "$SHARE_DIR" && wrangler pages deploy . \
+  --project-name gqshare \
+  --commit-dirty=true \
+  --branch main
+
+URL="https://gqshare.pages.dev/${SLUG}.html"
+TS=$(date "+%Y-%m-%dT%H:%M:%S")
+echo "{\"ts\":\"$TS\",\"source\":\"agents/honey-bee/data/ai-digest-html/${DATE}.html\",\"slug\":\"$SLUG\",\"url\":\"$URL\"}" >> ~/Documents/ClaudeCodeWorkSpace/data/cf-meta/share_log.jsonl
+echo "$URL" > /tmp/fb-share-url-${DATE}.txt
+```
+
+⚠️ share log **绝不**写进 `$SHARE_DIR`——那是 wrangler 全量上传目录，log 会变成公网可读，泄露所有历史链接。永远 append 到 `data/cf-meta/share_log.jsonl`。
+
+如果 wrangler 失败（CF 不通、token 过期、proxy 故障等），日志记录但**不要发飞书**——失败的链接没意义。
+
+**6d. Send short link message to Feishu group (optional, configured per user):**
 
 Reads `feishuShare.chatId` and `feishuShare.larkProfile` from `~/.follow-builders/config.json`. **If either is missing or empty, skip this step entirely.**
 
 ⚠️ **NEVER hardcode the chat ID in this file.** Use the user's own dedicated bot profile (e.g. `ai-digest`), NOT the main lark-cli default profile (which is typically the user's personal Claude Code bot — exposing it to a share group leaks private context).
 
+群消息**只发两行**：`📝 AI 早报 MMDD\n🔗 <URL>`。**不要**在消息里塞内容摘要——长内容点链接看，群消息保持清爽。描述 ≤10 字，遵循 share-html skill 约定。
+
 ```bash
 DATE=$(date +%Y-%m-%d)
+SHORT_DATE=$(date "+%m%d")
 CFG=~/.follow-builders/config.json
-CHAT_ID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$CFG'))?.feishuShare?.chatId||'')}catch(e){}")
-PROFILE=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$CFG'))?.feishuShare?.larkProfile||'')}catch(e){}")
+URL=$(cat /tmp/fb-share-url-${DATE}.txt 2>/dev/null)
+CHAT_ID=$(python3 -c "import json;d=json.load(open('$CFG'));print(d.get('feishuShare',{}).get('chatId',''))")
+PROFILE=$(python3 -c "import json;d=json.load(open('$CFG'));print(d.get('feishuShare',{}).get('larkProfile',''))")
 
-if [ -n "$CHAT_ID" ] && [ -n "$PROFILE" ]; then
-  cd ~/.follow-builders/digests && lark-cli --profile "$PROFILE" im +messages-send \
+if [ -n "$CHAT_ID" ] && [ -n "$PROFILE" ] && [ -n "$URL" ]; then
+  MSG="📝 AI 早报 ${SHORT_DATE}
+🔗 ${URL}"
+  lark-cli --profile "$PROFILE" im +messages-send \
     --chat-id "$CHAT_ID" \
-    --file "./AI 早报 ${DATE}.pdf" \
+    --text "$MSG" \
     --as bot
 fi
 ```
 
-Fallback (if PDF generation failed in 6b — send .md instead):
-```bash
-DATE=$(date +%Y-%m-%d)
-CFG=~/.follow-builders/config.json
-CHAT_ID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$CFG'))?.feishuShare?.chatId||'')}catch(e){}")
-PROFILE=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$CFG'))?.feishuShare?.larkProfile||'')}catch(e){}")
+⚠️ **不要用 node 读 config.json** — 系统 node 是 v11 不支持 optional chaining，python3 一行解决。
 
-if [ -n "$CHAT_ID" ] && [ -n "$PROFILE" ]; then
-  cd ~/.follow-builders/digests && lark-cli --profile "$PROFILE" im +messages-send \
-    --chat-id "$CHAT_ID" \
-    --file ./${DATE}.md \
-    --as bot
-fi
-```
+If lark-cli fails, log the error but do NOT stop — continue to 6e.
 
-Note: lark-cli requires `--file` to be a relative path within the current directory. Always `cd` to the digests directory first.
-This sends a **file attachment** (not inline text). Requires 6a/6b output to exist.
-If lark-cli fails, log the error but do NOT stop — continue to 6d.
-
-**6d. Deliver per user preference:**
+**6e. Deliver per user preference:**
 
 Read `config.delivery.method` from the JSON:
 
