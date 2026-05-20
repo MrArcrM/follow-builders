@@ -717,9 +717,12 @@ function extractPublishedAtFromHtml(html) {
 
   // 5. Visible "Published <date>" text — common on Anthropic / Sanity-rendered
   // pages where no structured metadata is emitted. Only accepts month-name
-  // formats to avoid grabbing arbitrary numeric content.
+  // formats to avoid grabbing arbitrary numeric content. Allow zero or more
+  // HTML tags / comments between "Published" and the date — Anthropic renders
+  // this as `Published <!-- -->Apr 23, 2026` (the comment is a React SSR
+  // boundary marker), so a single-tag-only pattern misses it.
   const publishedTextMatch = html.match(
-    /Published[\s:]*<\/?[^>]*>?\s*([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4})/,
+    /Published[\s:]*(?:<[^>]*>\s*)*([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4})/,
   );
   if (publishedTextMatch) return normalizeDate(publishedTextMatch[1]);
 

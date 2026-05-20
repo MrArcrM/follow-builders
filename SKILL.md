@@ -541,7 +541,7 @@ python3 "$SKILL_DIR/scripts/md_to_html.py" \
 
 如果脚本失败，日志记录但**不要 fallback 到 PDF**——直接停在 6b 报错，不要继续 6c/6d。
 
-**6c. Upload HTML to gqshare.pages.dev (always, if 6b succeeded):**
+**6c. Upload HTML to share.guoqu4akr.com (always, if 6b succeeded):**
 
 复用 `/share-html` skill 的核心逻辑：copy 到 share-html 数据目录加 6 位 hash 防猜 → wrangler 部署 → 拼 URL → append 到 share log。
 
@@ -560,7 +560,7 @@ cd "$SHARE_DIR" && wrangler pages deploy . \
   --commit-dirty=true \
   --branch main
 
-URL="https://gqshare.pages.dev/${SLUG}.html"
+URL="https://share.guoqu4akr.com/${SLUG}.html"
 TS=$(date "+%Y-%m-%dT%H:%M:%S")
 echo "{\"ts\":\"$TS\",\"source\":\"agents/honey-bee/data/ai-digest-html/${DATE}.html\",\"slug\":\"$SLUG\",\"url\":\"$URL\"}" >> ~/Documents/ClaudeCodeWorkSpace/data/cf-meta/share_log.jsonl
 echo "$URL" > /tmp/fb-share-url-${DATE}.txt
