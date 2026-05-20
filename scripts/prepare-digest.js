@@ -20,6 +20,21 @@ import { readFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { ProxyAgent, setGlobalDispatcher } from 'undici';
+import { fetchPublishedAt } from './extract-published-at.js';
+
+// Node's built-in fetch ignores HTTP(S)_PROXY env vars by default. On hosts
+// behind a corporate / Clash-style proxy where direct outbound is blocked
+// (raw.githubusercontent.com → UND_ERR_CONNECT_TIMEOUT), we have to wire it
+// through manually. Honored env vars match curl's convention.
+const proxyUrl =
+  process.env.HTTPS_PROXY ||
+  process.env.https_proxy ||
+  process.env.HTTP_PROXY ||
+  process.env.http_proxy;
+if (proxyUrl) {
+  setGlobalDispatcher(new ProxyAgent(proxyUrl));
+}
 
 // -- Constants ---------------------------------------------------------------
 
@@ -42,15 +57,23 @@ const PROMPT_FILES = [
 // -- Fetch helpers -----------------------------------------------------------
 
 async function fetchJSON(url) {
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  return res.json();
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 async function fetchText(url) {
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  return res.text();
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
 }
 
 // -- Main --------------------------------------------------------------------
@@ -96,6 +119,33 @@ async function main() {
     errors.push(
       ...feedBlogs.errors.map((error) => `Blog feed problem: ${error}`)
     );
+  }
+
+  // 2.5 Enrich blogs missing publishedAt by fetching the article page locally.
+  // Upstream's GHA scraper sometimes leaves publishedAt=null when the blog
+  // host doesn't expose standard metadata at scrape time. Step 2.5 in the
+  // SKILL filters out dateless blogs as a "stale > nothing" guard, so a
+  // missing date silently drops real content. This local fallback is cheap
+  // (one HTTP per dateless blog, typically 0-3 per run) and bounded by the
+  // helper's 8s timeout, so we never block the digest on a hung host.
+  const blogs = (feedBlogs?.blogs || []).slice();
+  const dateless = blogs.filter((b) => !b.publishedAt && b.url);
+  if (dateless.length > 0) {
+    const enriched = await Promise.all(
+      dateless.map(async (b) => ({ url: b.url, date: await fetchPublishedAt(b.url) })),
+    );
+    const dateByUrl = new Map(enriched.map((e) => [e.url, e.date]));
+    for (const b of blogs) {
+      if (!b.publishedAt && b.url && dateByUrl.get(b.url)) {
+        b.publishedAt = dateByUrl.get(b.url);
+      }
+    }
+    const recovered = enriched.filter((e) => e.date).length;
+    if (recovered > 0) {
+      console.error(
+        `[prepare-digest] enriched ${recovered}/${dateless.length} dateless blog(s) via local extraction`,
+      );
+    }
   }
 
   // 3. Load prompts with priority: user custom > remote (GitHub) > local default
@@ -150,14 +200,14 @@ async function main() {
     // Content to remix
     podcasts: feedPodcasts?.podcasts || [],
     x: feedX?.x || [],
-    blogs: feedBlogs?.blogs || [],
+    blogs,
 
     // Stats for the LLM to reference
     stats: {
       podcastEpisodes: feedPodcasts?.podcasts?.length || 0,
       xBuilders: feedX?.x?.length || 0,
       totalTweets: (feedX?.x || []).reduce((sum, a) => sum + a.tweets.length, 0),
-      blogPosts: feedBlogs?.blogs?.length || 0,
+      blogPosts: blogs.length,
       feedGeneratedAt: feedX?.generatedAt || feedPodcasts?.generatedAt || feedBlogs?.generatedAt || null
     },
 
