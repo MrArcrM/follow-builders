@@ -570,11 +570,11 @@ echo "$URL" > /tmp/fb-share-url-${DATE}.txt
 
 如果 wrangler 失败（CF 不通、token 过期、proxy 故障等），日志记录但**不要发飞书**——失败的链接没意义。
 
-**6d. Send short link message to Feishu group (optional, configured per user):**
+**6d. Send short link message to Feishu group(s) (optional, configured per user):**
 
-Reads `feishuShare.chatId` and `feishuShare.larkProfile` from `~/.follow-builders/config.json`. **If either is missing or empty, skip this step entirely.**
+Reads `feishuShare.targets` from `~/.follow-builders/config.json` — an **array** of `{chatId, larkProfile, label?}` entries, so 早报可以同时推到多个群、每个群用各自的 bot。**Backward-compat**：若顶层只有 `feishuShare.chatId` + `feishuShare.larkProfile`（旧 schema），当作一条 target 处理。若 targets 数组为空或字段缺失，跳过 6d 全步。
 
-⚠️ **NEVER hardcode the chat ID in this file.** Use the user's own dedicated bot profile (e.g. `ai-digest`), NOT the main lark-cli default profile (which is typically the user's personal Claude Code bot — exposing it to a share group leaks private context).
+⚠️ **NEVER hardcode the chat ID in this file.** Each target 用对应群的专属 bot profile（e.g. `ai-digest` for 日报反馈群、`yunya` for 云崖书院筑基斋），**绝不**用 lark-cli 默认 profile（那是郭大大本人的 Claude Code bot，暴露到分享群会泄露私域上下文）。
 
 群消息**只发两行**：`📝 AI 早报 MMDD\n🔗 <URL>`。**不要**在消息里塞内容摘要——长内容点链接看，群消息保持清爽。描述 ≤10 字，遵循 share-html skill 约定。
 
@@ -583,24 +583,69 @@ DATE=$(date +%Y-%m-%d)
 SHORT_DATE=$(date "+%m%d")
 CFG=~/.follow-builders/config.json
 URL=$(cat /tmp/fb-share-url-${DATE}.txt 2>/dev/null)
-CHAT_ID=$(python3 -c "import json;d=json.load(open('$CFG'));print(d.get('feishuShare',{}).get('chatId',''))")
-PROFILE=$(python3 -c "import json;d=json.load(open('$CFG'));print(d.get('feishuShare',{}).get('larkProfile',''))")
 
-if [ -n "$CHAT_ID" ] && [ -n "$PROFILE" ] && [ -n "$URL" ]; then
+if [ -n "$URL" ]; then
   MSG="📝 AI 早报 ${SHORT_DATE}
 🔗 ${URL}"
-  lark-cli --profile "$PROFILE" im +messages-send \
-    --chat-id "$CHAT_ID" \
-    --text "$MSG" \
-    --as bot
+
+  # 输出 "chatId<TAB>profile<TAB>label" 每条 target 一行，兼容新旧 schema
+  python3 -c "
+import json
+d = json.load(open('$CFG'))
+fs = d.get('feishuShare', {}) or {}
+targets = fs.get('targets')
+if not targets:
+    if fs.get('chatId') and fs.get('larkProfile'):
+        targets = [{'chatId': fs['chatId'], 'larkProfile': fs['larkProfile'], 'label': fs.get('label','default')}]
+    else:
+        targets = []
+for t in targets:
+    cid = t.get('chatId','').strip()
+    pro = t.get('larkProfile','').strip()
+    lab = t.get('label', cid[:8])
+    if cid and pro:
+        print(f'{cid}\t{pro}\t{lab}')
+" | while IFS=$'\t' read -r CHAT_ID PROFILE LABEL; do
+    echo "→ Feishu share to ${LABEL} (profile=${PROFILE})" >&2
+    lark-cli --profile "$PROFILE" im +messages-send \
+      --chat-id "$CHAT_ID" \
+      --text "$MSG" \
+      --as bot \
+      || echo "⚠️  Feishu push to ${LABEL} failed (profile=${PROFILE})" >&2
+  done
 fi
 ```
 
 ⚠️ **不要用 node 读 config.json** — 系统 node 是 v11 不支持 optional chaining，python3 一行解决。
 
-If lark-cli fails, log the error but do NOT stop — continue to 6e.
+**多群行为约定**：任何单个 target 失败都不阻断其他 target 和后续 6e/6f，log 即可（郭大大约定：宁可少推一个群，也不要因为一个 bot token 过期把整轮 digest 卡住）。
 
-**6e. Deliver per user preference:**
+**6e. Send short link message to Slack channel(s) (optional, configured per user):**
+
+Reads `slackShare.targets` from `~/.follow-builders/config.json` — 数组，每条 `{channelId, label?}`。空数组 / 字段缺失 → 跳过 6e 全步。
+
+⚠️ **跟 6d 飞书不同**：Slack 走的是 MCP 工具（`mcp__<slack-uuid>__slack_send_message`），不是 CLI。由 **LLM 直接调用** MCP tool，不要包 bash。Slack workspace 是郭大大私域，#inbox 频道 ID `C0B65DJHB2L`，不在这里硬编码——永远从 config 读。
+
+消息格式跟 6d 飞书一致，**只两行**：
+
+```
+📝 AI 早报 MMDD
+🔗 <URL>
+```
+
+不塞内容摘要、不加 lead 段、不加 emoji 装饰。短链点开就是完整 HTML 早报。
+
+执行步骤（LLM 自己跑，不要 bash 包装）：
+
+1. 读 `~/.follow-builders/config.json`，取 `slackShare.targets`
+2. 读 `/tmp/fb-share-url-${DATE}.txt` 拿 URL（6c 写入），URL 为空则跳过
+3. 拼消息文本 `📝 AI 早报 ${MMDD}\n🔗 ${URL}`
+4. 对每个 target 调用 `slack_send_message(channel_id, message)`
+5. 任何 target 失败不阻断其他 target，也不阻断后续 6f；终端打印 `→ Slack share to ${LABEL} (channel=${CHANNEL_ID})`
+
+⚠️ **绝不**对其他频道 (#p-all-updates / #project-* / Linear 镜像 #p-* 等) 默认推送——只推 config 里显式配置的 targets。
+
+**6f. Deliver per user preference:**
 
 Read `config.delivery.method` from the JSON:
 
