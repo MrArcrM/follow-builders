@@ -574,7 +574,7 @@ echo "$URL" > /tmp/fb-share-url-${DATE}.txt
 
 Reads `feishuShare.targets` from `~/.follow-builders/config.json` — an **array** of `{chatId, larkProfile, label?}` entries, so 早报可以同时推到多个群、每个群用各自的 bot。**Backward-compat**：若顶层只有 `feishuShare.chatId` + `feishuShare.larkProfile`（旧 schema），当作一条 target 处理。若 targets 数组为空或字段缺失，跳过 6d 全步。
 
-⚠️ **NEVER hardcode the chat ID in this file.** Each target 用对应群的专属 bot profile（e.g. `ai-digest` for 日报反馈群、`yunya` for 云崖书院筑基斋），**绝不**用 lark-cli 默认 profile（那是郭大大本人的 Claude Code bot，暴露到分享群会泄露私域上下文）。
+⚠️ **NEVER hardcode the chat ID in this file.** Each target 用对应群的专属 bot profile（e.g. `ai-digest` for 日报反馈群、`yunya` for 日报群），**绝不**用 lark-cli 默认 profile（那是郭大大本人的 Claude Code bot，暴露到分享群会泄露私域上下文）。
 
 群消息**只发两行**：`📝 AI 早报 MMDD\n🔗 <URL>`。**不要**在消息里塞内容摘要——长内容点链接看，群消息保持清爽。描述 ≤10 字，遵循 share-html skill 约定。
 
