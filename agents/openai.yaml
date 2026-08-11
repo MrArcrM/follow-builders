@@ -1,0 +1,4 @@
+interface:
+  display_name: "Follow Builders"
+  short_description: "Curate AI builder updates into digests"
+  default_prompt: "Use $follow-builders to generate today’s AI builders digest."

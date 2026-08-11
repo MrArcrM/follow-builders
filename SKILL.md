@@ -15,6 +15,21 @@ Philosophy: follow builders with original opinions, not influencers who regurgit
 (X/Twitter posts and YouTube transcripts) is fetched centrally and served via
 a public feed. Users only need API keys if they choose Telegram or email delivery.
 
+## Runtime paths
+
+Resolve paths once before running any command. Do not assume a macOS username or a
+specific skill-discovery directory:
+
+```bash
+SKILL_DIR="<absolute directory containing this SKILL.md>"
+WORKSPACE_ROOT="${WORKSPACE_ROOT:-$(cd "$SKILL_DIR/../../.." && pwd)}"
+HONEY_BEE_ROOT="${HONEY_BEE_ROOT:-$WORKSPACE_ROOT/agents/honey-bee}"
+```
+
+When installed outside the workspace layout, set `WORKSPACE_ROOT` and
+`HONEY_BEE_ROOT` explicitly. Never substitute an old `.claude/skills` or
+`.Codex/skills` path from another machine.
+
 ## Detecting Platform
 
 Before doing anything, detect which platform you're running on by running:
@@ -26,7 +41,7 @@ which openclaw 2>/dev/null && echo "PLATFORM=openclaw" || echo "PLATFORM=other"
   Delivery is automatic via OpenClaw's channel system. No need to ask about delivery method.
   Cron uses `openclaw cron add`.
 
-- **Other** (Claude Code, Cursor, etc.): Non-persistent agent. Terminal closes = agent stops.
+- **Other** (Codex, Claude Code, Cursor, etc.): Non-persistent agent. Terminal closes = agent stops.
   For automatic delivery, users MUST set up Telegram or Email. Without it, digests
   are on-demand only (user types `/ai` to get one).
   Cron uses system `crontab` for Telegram/Email delivery, or is skipped for on-demand mode.
@@ -69,7 +84,7 @@ For weekly, also ask which day.
 user's Telegram/Discord/WhatsApp/etc. Set `delivery.method` to `"stdout"` in config
 and move on.
 
-**If non-persistent agent (Claude Code, Cursor, etc.):**
+**If non-persistent agent (Codex, Claude Code, Cursor, etc.):**
 
 Tell the user:
 
@@ -314,7 +329,7 @@ Before loading config, auto-sync the skill with upstream (郭大大's fork 追
 zarazhangrui/follow-builders)。Run:
 
 ```bash
-~/Documents/ClaudeCodeWorkSpace/agents/honey-bee/check-upstream.sh --sync
+"$HONEY_BEE_ROOT/check-upstream.sh" --sync
 ```
 
 - Exit 0, no output about updates → upstream 无实质更新，continue 到 Step 1。
@@ -336,7 +351,7 @@ You do NOT fetch anything yourself.
 
 ```bash
 DATE=$(date +%Y-%m-%d)
-cd ${CLAUDE_SKILL_DIR}/scripts && node prepare-digest.js 2>/dev/null | tee /tmp/fb-prepare-${DATE}.json
+cd "$SKILL_DIR/scripts" && node prepare-digest.js 2>/dev/null | tee /tmp/fb-prepare-${DATE}.json
 ```
 
 The `tee` snapshot at `/tmp/fb-prepare-${DATE}.json` is REQUIRED by Step 4d / 4f (codex 审计) — don't omit it.
@@ -528,8 +543,7 @@ DIGESTEOF
 
 ```bash
 DATE=$(date +%Y-%m-%d)
-SKILL_DIR=/Users/guoqu/Documents/ClaudeCodeWorkSpace/agents/honey-bee/.claude/skills/follow-builders
-HTML_OUT=/Users/guoqu/Documents/ClaudeCodeWorkSpace/agents/honey-bee/data/ai-digest-html/${DATE}.html
+HTML_OUT="$HONEY_BEE_ROOT/data/ai-digest-html/${DATE}.html"
 mkdir -p "$(dirname "$HTML_OUT")"
 python3 "$SKILL_DIR/scripts/md_to_html.py" \
   ~/.follow-builders/digests/${DATE}.md \
@@ -537,7 +551,7 @@ python3 "$SKILL_DIR/scripts/md_to_html.py" \
   "$HTML_OUT"
 ```
 
-转换器 `scripts/md_to_html.py` 是 follow-builders 本地零依赖脚本，只支持 digest 实际用到的 markdown 子集（H1/H2/H3 + 段落 + blockquote + bold + 自动链接 `<url>` + markdown 链接 `[text](url)` + `---` 分隔 + footer）。模板 `templates/digest.html` 是 claude-white 风格的 self-contained HTML（inline CSS，移动端自适应，noindex 防爬）。
+转换器 `scripts/md_to_html.py` 是 follow-builders 本地零依赖脚本，只支持 digest 实际用到的 markdown 子集（H1/H2/H3 + 段落 + blockquote + bold + 自动链接 `<url>` + markdown 链接 `[text](url)` + `---` 分隔 + footer）。模板 `templates/digest.html` 是 Codex-white 风格的 self-contained HTML（inline CSS，移动端自适应，noindex 防爬）。
 
 如果脚本失败，日志记录但**不要 fallback 到 PDF**——直接停在 6b 报错，不要继续 6c/6d。
 
@@ -547,11 +561,11 @@ python3 "$SKILL_DIR/scripts/md_to_html.py" \
 
 ```bash
 DATE=$(date +%Y-%m-%d)
-SHARE_DIR=~/Documents/ClaudeCodeWorkSpace/data/share-html
+SHARE_DIR="$WORKSPACE_ROOT/data/share-html"
 HASH=$(openssl rand -hex 3)
 SLUG="ai-digest-${DATE}-${HASH}"
 TARGET="$SHARE_DIR/${SLUG}.html"
-cp /Users/guoqu/Documents/ClaudeCodeWorkSpace/agents/honey-bee/data/ai-digest-html/${DATE}.html "$TARGET"
+cp "$HONEY_BEE_ROOT/data/ai-digest-html/${DATE}.html" "$TARGET"
 
 # wrangler 需要 node v22+，nvm 装在 ~/.nvm/versions/node/v22.20.0/
 export PATH=~/.nvm/versions/node/v22.20.0/bin:$PATH
@@ -562,7 +576,7 @@ cd "$SHARE_DIR" && wrangler pages deploy . \
 
 URL="https://share.guoqu4akr.com/${SLUG}.html"
 TS=$(date "+%Y-%m-%dT%H:%M:%S")
-echo "{\"ts\":\"$TS\",\"source\":\"agents/honey-bee/data/ai-digest-html/${DATE}.html\",\"slug\":\"$SLUG\",\"url\":\"$URL\"}" >> ~/Documents/ClaudeCodeWorkSpace/data/cf-meta/share_log.jsonl
+echo "{\"ts\":\"$TS\",\"source\":\"agents/honey-bee/data/ai-digest-html/${DATE}.html\",\"slug\":\"$SLUG\",\"url\":\"$URL\"}" >> "$WORKSPACE_ROOT/data/cf-meta/share_log.jsonl"
 echo "$URL" > /tmp/fb-share-url-${DATE}.txt
 ```
 
@@ -574,7 +588,7 @@ echo "$URL" > /tmp/fb-share-url-${DATE}.txt
 
 Reads `feishuShare.targets` from `~/.follow-builders/config.json` — an **array** of `{chatId, larkProfile, label?}` entries, so 早报可以同时推到多个群、每个群用各自的 bot。**Backward-compat**：若顶层只有 `feishuShare.chatId` + `feishuShare.larkProfile`（旧 schema），当作一条 target 处理。若 targets 数组为空或字段缺失，跳过 6d 全步。
 
-⚠️ **NEVER hardcode the chat ID in this file.** Each target 用对应群的专属 bot profile（e.g. `ai-digest` for 日报反馈群、`yunya` for 日报群），**绝不**用 lark-cli 默认 profile（那是郭大大本人的 Claude Code bot，暴露到分享群会泄露私域上下文）。
+⚠️ **NEVER hardcode the chat ID in this file.** Each target 用对应群的专属 bot profile（e.g. `ai-digest` for 日报反馈群、`yunya` for 日报群），**绝不**用 lark-cli 默认 profile（那是郭大大本人的 Codex bot，暴露到分享群会泄露私域上下文）。
 
 群消息**只发两行**：`📝 AI 早报 MMDD\n🔗 <URL>`。**不要**在消息里塞内容摘要——长内容点链接看，群消息保持清爽。描述 ≤10 字，遵循 share-html skill 约定。
 
@@ -624,7 +638,7 @@ fi
 
 Reads `slackShare.targets` from `~/.follow-builders/config.json` — 数组，每条 `{channelId, label?}`。空数组 / 字段缺失 → 跳过 6e 全步。
 
-⚠️ **跟 6d 飞书不同**：Slack 走的是 MCP 工具（`mcp__<slack-uuid>__slack_send_message`），不是 CLI。由 **LLM 直接调用** MCP tool，不要包 bash。Slack workspace 是郭大大私域，#inbox 频道 ID `C0B65DJHB2L`，不在这里硬编码——永远从 config 读。
+⚠️ **跟 6d 飞书不同**：Slack 走的是 MCP 工具（`mcp__<slack-uuid>__slack_send_message`），不是 CLI。由 **LLM 直接调用** MCP tool，不要包 bash。Slack workspace 是郭大大私域，频道 ID 永远从 config 读，不在公开 Skill 文件里保存。
 
 消息格式跟 6d 飞书一致，**只两行**：
 
@@ -643,6 +657,44 @@ Reads `slackShare.targets` from `~/.follow-builders/config.json` — 数组，�
 4. 对每个 target 调用 `slack_send_message(channel_id, message)`
 5. 任何 target 失败不阻断其他 target，也不阻断后续 6f；终端打印 `→ Slack share to ${LABEL} (channel=${CHANNEL_ID})`
 
+**MCP transient failure retry protocol（必须执行）**：
+
+Slack MCP 偶发在当前 Codex thread/session 卡死，典型错误是：
+`failed to get client`、`MCP startup failed`、`https://chatgpt.com/backend-api/ps/mcp`、`https://chatgpt.com/backend-api/wham/apps`。这类错误通常不是 Slack channel、权限或消息体问题。
+
+遇到上述初始化/握手错误时，不要立刻宣布 Slack 未送达。按下面顺序处理：
+
+1. 先用 `tool_search` 重新查找 Slack send tool；有时工具稍后才暴露。
+2. 对同一个 `channel_id + message` 最多做 3 次发送尝试：立即 1 次，等待约 60 秒后 1 次，等待约 180 秒后 1 次。
+3. 只对 MCP 初始化/transport 错误重试；`channel_not_found`、权限错误、消息格式错误不要重试，直接报告具体错误。
+4. 如果直接 send tool 暂不可用但 draft tool 已暴露，允许先建 draft；但 draft 不算送达，必须后续用真实 send tool 发送，并用 `draft_id` 清掉 draft。不要把 draft 链接当成功。
+5. 3 次仍失败时，写入 automation memory，并额外写 pending marker：
+
+```bash
+DATE=$(date +%Y-%m-%d)
+export DATE
+mkdir -p ~/.follow-builders/pending
+python3 - <<'PYEOF'
+import json, os, datetime
+date = os.environ.get('DATE') or datetime.date.today().strftime('%Y-%m-%d')
+url_path = f'/tmp/fb-share-url-{date}.txt'
+url = open(url_path).read().strip() if os.path.exists(url_path) else ''
+path = os.path.expanduser(f'~/.follow-builders/pending/slack-{date}.json')
+payload = {
+  'date': date,
+  'reason': 'Slack MCP initialization failed after retries',
+  'url': url,
+  'message': f'📝 AI 早报 {datetime.datetime.now().strftime("%m%d")}\n🔗 {url}' if url else '',
+  'createdAt': datetime.datetime.now().isoformat(timespec='seconds')
+}
+with open(path, 'w') as f:
+    json.dump(payload, f, ensure_ascii=False, indent=2)
+print(path)
+PYEOF
+```
+
+最终汇报里要明确区分：`share + Feishu 成功，Slack pending`。如果用户之后说“再试一下”，优先读取这个 pending marker 或 automation memory 里的 URL，直接补发 Slack，不要重新生成日报。
+
 ⚠️ **绝不**对其他频道 (#p-all-updates / #project-* / Linear 镜像 #p-* 等) 默认推送——只推 config 里显式配置的 targets。
 
 **6f. Deliver per user preference:**
@@ -652,7 +704,7 @@ Read `config.delivery.method` from the JSON:
 **If "telegram" or "email":**
 ```bash
 echo '<your digest text>' > /tmp/fb-digest.txt
-cd ${CLAUDE_SKILL_DIR}/scripts && node deliver.js --file /tmp/fb-digest.txt 2>/dev/null
+cd "$SKILL_DIR/scripts" && node deliver.js --file /tmp/fb-digest.txt 2>/dev/null
 ```
 If delivery fails, show the digest in the terminal as fallback.
 
@@ -691,7 +743,7 @@ customization persists and won't be overwritten by central updates.
 
 ```bash
 mkdir -p ~/.follow-builders/prompts
-cp ${CLAUDE_SKILL_DIR}/prompts/<filename>.md ~/.follow-builders/prompts/<filename>.md
+cp "$SKILL_DIR/prompts/<filename>.md" ~/.follow-builders/prompts/<filename>.md
 ```
 
 Then edit `~/.follow-builders/prompts/<filename>.md` with the user's requested changes.
@@ -723,7 +775,7 @@ When the user invokes `/ai` or asks for their digest manually:
 
 **写完 4c 中文 digest 草稿后，按这一节自查一遍格式**。这一节是格式约束的唯一权威——写作 prompt 不重复这些规则，避免写作时分心抢 editorial 注意力。
 
-格式正确是 PDF 排版（md-to-pdf claude-white-larger 主题）的必要条件，自查不能跳。
+格式正确是 HTML 排版（Codex-white 主题）的必要条件，自查不能跳。
 
 ### 1. Link 格式
 
